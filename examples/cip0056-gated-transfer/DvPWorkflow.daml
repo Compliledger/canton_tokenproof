@@ -1,0 +1,120 @@
+module Examples.DvPWorkflow where
+
+import Daml.Script
+import DA.Time
+import Main.ComplianceProof
+import Main.Types
+import Examples.TokenBond
+
+-- | Payment leg of an atomic DvP — represents Canton Coin allocation.
+-- In production this would be a CIP-0056 fungible holding.
+template PaymentAllocation
+  with
+    payer     : Party
+    payee     : Party
+    amount    : Decimal
+    currency  : Text
+    assetId   : Text   -- reference to the bond being purchased
+  where
+    signatory payer
+    observer  payee
+
+    choice SettlePayment : ()
+      controller payee
+      do
+        return ()
+
+-- | Atomic DvP settlement proposal.
+-- Buyer proposes payment + bond transfer in a single contract.
+-- Seller accepts — both legs execute atomically.
+template DvPProposal
+  with
+    buyer         : Party
+    seller        : Party
+    evaluator     : Party
+    assetId       : Text
+    paymentAmount : Decimal
+    currency      : Text
+    bondCid       : ContractId TokenBond
+  where
+    signatory buyer
+    observer  seller, evaluator
+
+    -- Seller accepts — compliance check fires, payment settles, bond transfers.
+    -- All three steps are inside one Canton transaction.
+    choice Accept : (ContractId TokenBond, ContractId PaymentAllocation)
+      with
+        newBondOwner : Party
+      controller seller
+      do
+        -- Step 1: verify compliance proof is Active (atomic check).
+        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        assertMsg
+          ("DvP blocked: compliance proof status is " <> show proof.decisionStatus)
+          (proof.decisionStatus == Active)
+
+        -- Step 2: transfer the bond to the buyer.
+        newBondCid <- exercise bondCid Transfer with newOwner = buyer
+
+        -- Step 3: settle the payment leg.
+        paymentCid <- create PaymentAllocation with
+          payer    = buyer
+          payee    = seller
+          amount   = paymentAmount
+          currency = currency
+          assetId  = assetId
+
+        return (newBondCid, paymentCid)
+
+    choice Reject : ()
+      controller seller
+      do
+        return ()
+
+-- | Daml Script demonstrating the full DvP with compliance gate.
+dvpWorkflowDemo : Script ()
+dvpWorkflowDemo = do
+  seller    <- allocateParty "GoldmanDAP"
+  buyer     <- allocateParty "JPMorganBuyer"
+  evaluator <- allocateParty "TokenProofEvaluator"
+
+  let baseTime = datetime 2026 Apr 13 0 0 0
+  let assetId  = "BOND-GS-2026-002"
+
+  -- Anchor compliance proof.
+  proofCid <- submitMulti [seller, evaluator] [] $ createCmd ComplianceProof with
+    assetId        = assetId
+    issuer         = seller
+    evaluator      = evaluator
+    regulator      = None
+    classification = "digital_security"
+    policyVersion  = "SEC_CLASSIFICATION_v1"
+    decisionStatus = Active
+    proofHash      = "sha256:dvpDemo456"
+    timestamp      = baseTime
+
+  -- Seller issues bond.
+  bondCid <- submitMulti [seller, seller] [] $ createCmd TokenBond with
+    issuer       = seller
+    owner        = seller
+    evaluator    = evaluator
+    assetId      = assetId
+    faceValue    = 5000000.0
+    currency     = "USD"
+    maturityDate = "2028-04-13"
+
+  -- Buyer proposes DvP.
+  proposalCid <- submit buyer $ createCmd DvPProposal with
+    buyer         = buyer
+    seller        = seller
+    evaluator     = evaluator
+    assetId       = assetId
+    paymentAmount = 5000000.0
+    currency      = "USD"
+    bondCid       = bondCid
+
+  -- Seller accepts — atomic: compliance check + bond transfer + payment in one tx.
+  (newBondCid, paymentCid) <- submit seller $ exerciseCmd proposalCid Accept with
+    newBondOwner = buyer
+
+  return ()

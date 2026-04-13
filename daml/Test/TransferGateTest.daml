@@ -1,0 +1,75 @@
+module Test.TransferGateTest where
+
+import Daml.Script
+import DA.Time
+import Main.ComplianceProof
+import Main.Types
+
+-- | Minimal tokenized bond used only within this test module.
+-- The production reference implementation lives in examples/cip0056-gated-transfer/.
+template TestBond
+  with
+    issuer    : Party
+    owner     : Party
+    evaluator : Party
+    assetId   : Text
+  where
+    signatory issuer, owner
+    observer  evaluator
+
+    -- Transfer enforces the compliance gate atomically.
+    -- fetchByKey reads the live proof inside this very transaction —
+    -- no race condition between check and execution is possible.
+    choice Transfer : ContractId TestBond
+      with
+        newOwner : Party
+      controller owner
+      do
+        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        assertMsg
+          ("Transfer blocked: compliance proof status is " <> show proof.decisionStatus)
+          (proof.decisionStatus == Active)
+        create this with owner = newOwner
+
+-- | Critical enforcement test: proves the compliance gate actually blocks
+-- transfers when a proof is Revoked. submitMustFail is the definitive assertion.
+-- Run with: dpm test
+transferGateTest : Script ()
+transferGateTest = do
+  issuer    <- allocateParty "BondIssuer"
+  buyer     <- allocateParty "Buyer"
+  evaluator <- allocateParty "TokenProofEvaluator"
+
+  let assetId  = "BOND-GS-2026-001"
+  let baseTime = datetime 2026 Apr 13 0 0 0
+
+  -- Create an Active compliance proof for the bond.
+  proofCid <- submitMulti [issuer, evaluator] [] $ createCmd ComplianceProof with
+    assetId        = assetId
+    issuer         = issuer
+    evaluator      = evaluator
+    regulator      = None
+    classification = "digital_security"
+    policyVersion  = "SEC_CLASSIFICATION_v1"
+    decisionStatus = Active
+    proofHash      = "sha256:bondHash123"
+    timestamp      = baseTime
+
+  -- Create the bond held by the issuer.
+  bondCid <- submitMulti [issuer, issuer] [] $ createCmd TestBond with
+    issuer    = issuer
+    owner     = issuer
+    evaluator = evaluator
+    assetId   = assetId
+
+  -- Transfer SUCCEEDS — proof is Active.
+  buyerBondCid <- submit issuer $ exerciseCmd bondCid Transfer with newOwner = buyer
+
+  -- Evaluator revokes the proof (e.g. SEC investigation opened).
+  submit evaluator $ exerciseCmd proofCid RevokeProof
+
+  -- Transfer FAILS — submitMustFail confirms atomic enforcement.
+  -- The assertMsg inside Transfer produces: "Transfer blocked: compliance proof status is Revoked"
+  submitMustFail buyer $ exerciseCmd buyerBondCid Transfer with newOwner = issuer
+
+  return ()

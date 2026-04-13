@@ -1,0 +1,45 @@
+module Main.ComplianceGuard where
+
+import Main.ComplianceProof
+import Main.Types
+
+-- | View type returned by the ComplianceGuard interface.
+data ComplianceGuardView = ComplianceGuardView
+  with
+    assetId   : Text
+    evaluator : Party
+    status    : DecisionStatus
+  deriving (Show, Eq)
+
+-- | ComplianceGuard is a DAML interface.
+-- Any CIP-0056 token implementation can implement this interface to add
+-- an atomic compliance precondition on its Transfer choice.
+-- The getComplianceStatus method reads proof state inside the same
+-- Canton transaction as the asset movement — no race condition possible.
+interface ComplianceGuard where
+  viewtype ComplianceGuardView
+  getComplianceStatus : Update DecisionStatus
+
+-- | Concrete implementation of ComplianceGuard backed by a ComplianceProof contract.
+-- The evaluator is signatory; the issuer is observer.
+template ComplianceGuardImpl
+  with
+    assetId   : Text
+    evaluator : Party
+    issuer    : Party
+  where
+    signatory evaluator
+    observer  issuer
+
+    interface instance ComplianceGuard for ComplianceGuardImpl where
+      view = ComplianceGuardView
+        with
+          assetId   = assetId
+          evaluator = evaluator
+          status    = Active  -- resolved at fetch time, not stored here
+
+      -- Fetch the live ComplianceProof by (assetId, evaluator) key.
+      -- This happens atomically inside the calling transaction.
+      getComplianceStatus = do
+        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        return proof.decisionStatus

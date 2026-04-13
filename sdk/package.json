@@ -1,0 +1,28 @@
+{
+  "name": "@tokenproof/canton-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the TokenProof Canton compliance primitive.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint src --ext .ts",
+    "test": "jest"
+  },
+  "keywords": ["canton", "daml", "compliance", "tokenproof", "rwa"],
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@c7/ledger": "^0.3.0",
+    "axios": "^1.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.5",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.12",
+    "ts-jest": "^29.1.4",
+    "eslint": "^9.3.0",
+    "@typescript-eslint/parser": "^7.10.0",
+    "@typescript-eslint/eslint-plugin": "^7.10.0"
+  }
+}

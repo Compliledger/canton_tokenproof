@@ -1,0 +1,126 @@
+module Examples.StablecoinToken where
+
+import Daml.Script
+import DA.Time
+import Main.ComplianceProof
+import Main.Types
+
+-- | CIP-0056 style stablecoin with GENIUS Act compliance gate on minting.
+-- Each mint checks the GENIUS_v1 proof atomically — if reserve backing
+-- cannot be confirmed (proof Suspended or Revoked), the mint fails.
+template StablecoinToken
+  with
+    issuer    : Party
+    owner     : Party
+    evaluator : Party
+    assetId   : Text   -- stablecoin identifier, e.g. "BRALE-USD-2026"
+    amount    : Decimal
+    currency  : Text
+  where
+    signatory issuer, owner
+    observer  evaluator
+
+    -- Transfer checks compliance atomically.
+    choice Transfer : ContractId StablecoinToken
+      with
+        newOwner : Party
+      controller owner
+      do
+        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        assertMsg
+          ("Transfer blocked: GENIUS_v1 proof status is " <> show proof.decisionStatus)
+          (proof.decisionStatus == Active)
+        create this with owner = newOwner
+
+-- | CIP-0076 style minting delegation.
+-- The Mint choice is gated on the GENIUS_v1 ComplianceProof.
+-- If the issuer's reserve attestation has been Suspended or Revoked,
+-- the mint fails atomically — no new tokens can be created.
+template MintingDelegation
+  with
+    issuer    : Party
+    delegate  : Party
+    evaluator : Party
+    assetId   : Text
+    currency  : Text
+  where
+    signatory issuer
+    observer  evaluator, delegate
+
+    -- Mint new tokens — GENIUS Act compliance gate fires atomically.
+    choice Mint : ContractId StablecoinToken
+      with
+        recipient : Party
+        amount    : Decimal
+      controller delegate
+      do
+        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        assertMsg
+          ("Mint blocked: GENIUS_v1 proof not Active — " <> show proof.decisionStatus)
+          (proof.decisionStatus == Active)
+        create StablecoinToken with
+          issuer    = issuer
+          owner     = recipient
+          evaluator = evaluator
+          assetId   = assetId
+          amount    = amount
+          currency  = currency
+
+    choice RevokeDelegation : ()
+      controller issuer
+      do
+        return ()
+
+-- | Daml Script demonstrating GENIUS Act gated minting.
+geniusActMintingDemo : Script ()
+geniusActMintingDemo = do
+  issuer    <- allocateParty "BraleIssuer"
+  delegate  <- allocateParty "BraleOps"
+  evaluator <- allocateParty "TokenProofEvaluator"
+  customer  <- allocateParty "InstitutionalBuyer"
+
+  let baseTime = datetime 2026 Apr 13 0 0 0
+  let assetId  = "BRALE-USD-2026"
+
+  -- GENIUS_v1 compliance proof — reserve attestation passed.
+  proofCid <- submitMulti [issuer, evaluator] [] $ createCmd ComplianceProof with
+    assetId        = assetId
+    issuer         = issuer
+    evaluator      = evaluator
+    regulator      = None
+    classification = "payment_stablecoin"
+    policyVersion  = "GENIUS_v1"
+    decisionStatus = Active
+    proofHash      = "sha256:genius123reserve"
+    timestamp      = baseTime
+
+  -- Issuer creates a minting delegation to the ops team.
+  delegationCid <- submit issuer $ createCmd MintingDelegation with
+    issuer    = issuer
+    delegate  = delegate
+    evaluator = evaluator
+    assetId   = assetId
+    currency  = "USD"
+
+  -- Mint SUCCEEDS — GENIUS_v1 proof is Active.
+  tokenCid <- submit delegate $ exerciseCmd delegationCid Mint with
+    recipient = customer
+    amount    = 100000.0
+
+  -- Reserve ratio drops — evaluator suspends the proof.
+  suspendedCid <- submit evaluator $ exerciseCmd proofCid SuspendProof
+
+  -- Re-create the delegation (original was consumed by Mint).
+  delegationCid2 <- submit issuer $ createCmd MintingDelegation with
+    issuer    = issuer
+    delegate  = delegate
+    evaluator = evaluator
+    assetId   = assetId
+    currency  = "USD"
+
+  -- Mint FAILS — proof is Suspended (reserve backing unconfirmed).
+  submitMustFail delegate $ exerciseCmd delegationCid2 Mint with
+    recipient = customer
+    amount    = 50000.0
+
+  return ()

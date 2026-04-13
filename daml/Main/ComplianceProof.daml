@@ -1,0 +1,63 @@
+module Main.ComplianceProof where
+
+import DA.Time
+import Main.Types
+
+-- | Core on-ledger compliance record.
+-- Both issuer and evaluator are co-signatories — neither party can act
+-- unilaterally. The regulator is an Optional Party observer: scoped,
+-- read-only access with no ability to exercise choices.
+--
+-- fetchByKey key: (assetId, evaluator)
+-- Used by ComplianceGuard.getComplianceStatus inside Transfer choices.
+template ComplianceProof
+  with
+    assetId        : Text           -- CIP-0056 token identifier
+    issuer         : Party          -- asset issuer (signatory)
+    evaluator      : Party          -- TokenProof evaluator (signatory)
+    regulator      : Optional Party -- observer; scoped read-only access
+    classification : Text           -- e.g. "payment_stablecoin"
+    policyVersion  : Text           -- e.g. "GENIUS_v1"
+    decisionStatus : DecisionStatus
+    proofHash      : Text           -- SHA-256 of evaluation snapshot
+    timestamp      : Time
+  where
+    signatory issuer, evaluator
+    observer  regulator
+
+    key (assetId, evaluator) : (Text, Party)
+    maintainer key._2
+
+    -- Suspend: evaluator flags a compliance concern.
+    -- Transfers are blocked while Suspended.
+    choice SuspendProof : ContractId ComplianceProof
+      controller evaluator
+      do
+        assertMsg "Can only suspend an Active proof"
+          (decisionStatus == Active)
+        create this with decisionStatus = Suspended
+
+    -- Revoke: irreversible. Transfers are permanently blocked.
+    choice RevokeProof : ContractId ComplianceProof
+      controller evaluator
+      do
+        assertMsg "Cannot revoke a proof that is already Revoked"
+          (decisionStatus /= Revoked)
+        create this with decisionStatus = Revoked
+
+    -- ReEvaluate: creates a new versioned proof. Archives the current one.
+    -- Both parties must co-authorise re-evaluation.
+    choice ReEvaluate : ContractId ComplianceProof
+      with
+        newClassification : Text
+        newPolicyVersion  : Text
+        newProofHash      : Text
+        newTimestamp      : Time
+      controller issuer, evaluator
+      do
+        create this with
+          classification = newClassification
+          policyVersion  = newPolicyVersion
+          proofHash      = newProofHash
+          timestamp      = newTimestamp
+          decisionStatus = Active

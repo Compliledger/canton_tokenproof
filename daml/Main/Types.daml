@@ -1,0 +1,30 @@
+module Main.Types where
+
+-- | Compliance decision state — monotonically downgrading.
+-- Active is the only state that permits CIP-0056 transfers.
+-- Revoked is terminal and cannot be reversed.
+data DecisionStatus
+  = Active
+  | Suspended
+  | Revoked
+  deriving (Eq, Show)
+
+-- | Regulatory policy packs supported by the classification engine.
+-- Each pack maps to a distinct set of deterministic evaluation controls.
+data PolicyPack
+  = GENIUS_v1
+  | CLARITY_v1
+  | SEC_CLASSIFICATION_v1
+  deriving (Eq, Show)
+
+-- | Asset classification buckets.
+-- Assigned by the classification engine after all controls pass.
+-- Mixed is assigned when controls from multiple packs conflict.
+data AssetBucket
+  = PaymentStablecoin
+  | DigitalSecurity
+  | DigitalCommodity
+  | DigitalTool
+  | DigitalCollectible
+  | Mixed
+  deriving (Eq, Show)

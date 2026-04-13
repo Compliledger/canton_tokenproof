@@ -1,0 +1,36 @@
+# DAML build artifacts
+daml/.daml/
+daml/**/*.dar
+*.dar
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+*.egg-info/
+.ruff_cache/
+
+# Node / TypeScript
+node_modules/
+sdk/dist/
+sdk/*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+*.env
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log

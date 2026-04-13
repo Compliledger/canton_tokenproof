@@ -1,0 +1,87 @@
+module Examples.TokenBond where
+
+import Daml.Script
+import DA.Time
+import Main.ComplianceProof
+import Main.Types
+
+-- | CIP-0056 style tokenized bond with a compliance gate on Transfer.
+-- The ComplianceGuard precondition fires atomically inside the same
+-- Canton transaction as the asset movement — both pass or both fail.
+template TokenBond
+  with
+    issuer       : Party
+    owner        : Party
+    evaluator    : Party   -- TokenProof evaluator party
+    assetId      : Text
+    faceValue    : Decimal
+    currency     : Text
+    maturityDate : Text
+  where
+    signatory issuer, owner
+    observer  evaluator
+
+    -- Transfer choice — compliance gate fires atomically inside this transaction.
+    -- Step 1: fetch the live proof by key (same tx, no race condition possible).
+    -- Step 2: assert Active — if Revoked or Suspended, the entire tx fails.
+    -- Step 3: only on Active — archive and recreate with new owner.
+    choice Transfer : ContractId TokenBond
+      with
+        newOwner : Party
+      controller owner
+      do
+        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        assertMsg
+          ("Transfer blocked: compliance proof status is " <> show proof.decisionStatus)
+          (proof.decisionStatus == Active)
+        create this with owner = newOwner
+
+    -- Owner can lock the bond (e.g. pledged as collateral).
+    choice Lock : ContractId TokenBond
+      controller owner
+      do
+        create this with owner = issuer
+
+-- | Daml Script demonstrating the atomic DvP compliance enforcement workflow.
+-- All steps happen inside one Canton transaction via two-phase commit.
+-- The Global Synchronizer coordinates — one step fails, all fail.
+atomicDvPDemo : Script ()
+atomicDvPDemo = do
+  issuer    <- allocateParty "GoldmanDAP"
+  buyer     <- allocateParty "JPMorganBuyer"
+  evaluator <- allocateParty "TokenProofEvaluator"
+
+  let baseTime = datetime 2026 Apr 13 0 0 0
+
+  -- Anchor an Active compliance proof for the bond.
+  proofCid <- submitMulti [issuer, evaluator] [] $ createCmd ComplianceProof with
+    assetId        = "BOND-GS-2026-001"
+    issuer         = issuer
+    evaluator      = evaluator
+    regulator      = None
+    classification = "digital_security"
+    policyVersion  = "SEC_CLASSIFICATION_v1"
+    decisionStatus = Active
+    proofHash      = "sha256:abc123def456"
+    timestamp      = baseTime
+
+  -- Issue the bond to the issuer's own account.
+  bondCid <- submitMulti [issuer, issuer] [] $ createCmd TokenBond with
+    issuer       = issuer
+    owner        = issuer
+    evaluator    = evaluator
+    assetId      = "BOND-GS-2026-001"
+    faceValue    = 1000000.0
+    currency     = "USD"
+    maturityDate = "2027-04-13"
+
+  -- Transfer SUCCEEDS — proof is Active.
+  buyerBondCid <- submit issuer $ exerciseCmd bondCid Transfer with newOwner = buyer
+
+  -- Revoke the proof (e.g. SEC classification override).
+  revokedCid <- submit evaluator $ exerciseCmd proofCid RevokeProof
+
+  -- Transfer FAILS — submitMustFail confirms atomic gate enforcement.
+  submitMustFail buyer $ exerciseCmd buyerBondCid Transfer with newOwner = issuer
+
+  return ()

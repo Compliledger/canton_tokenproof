@@ -1,0 +1,49 @@
+module Main.EvaluationRequest where
+
+import DA.Time
+import Main.Types
+
+-- | Lifecycle stages of an evaluation request.
+data EvaluationStatus
+  = Pending
+  | Evaluated
+  | Archived
+  deriving (Eq, Show)
+
+-- | On-ledger request lifecycle management.
+-- An issuer creates an EvaluationRequest; the evaluator processes it
+-- and either anchors a ComplianceProof or returns failure reasons.
+-- Archiving closes the request after the proof is created.
+template EvaluationRequest
+  with
+    assetId       : Text
+    issuer        : Party
+    evaluator     : Party
+    policyPack    : Text       -- e.g. "GENIUS_v1"
+    assetMetadata : Text       -- JSON-encoded metadata snapshot
+    status        : EvaluationStatus
+    submittedAt   : Time
+    failureReason : Optional Text  -- populated on evaluation failure
+  where
+    signatory issuer
+    observer  evaluator
+
+    -- Evaluator marks the request as Evaluated (proof anchored off this choice).
+    choice MarkEvaluated : ContractId EvaluationRequest
+      with
+        reason : Optional Text
+      controller evaluator
+      do
+        assertMsg "Can only evaluate a Pending request"
+          (status == Pending)
+        create this with
+          status        = Evaluated
+          failureReason = reason
+
+    -- Archive the request once the ComplianceProof has been created.
+    choice ArchiveRequest : ()
+      controller evaluator
+      do
+        assertMsg "Can only archive an Evaluated request"
+          (status == Evaluated)
+        return ()

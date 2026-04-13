@@ -1,0 +1,61 @@
+module Test.ComplianceProofTest where
+
+import Daml.Script
+import DA.Time
+import Main.ComplianceProof
+import Main.Types
+
+-- | Full lifecycle test for the ComplianceProof template.
+-- Covers: creation, suspension, revocation, double-revoke guard, and re-evaluation.
+-- Run with: dpm test
+complianceProofLifecycleTest : Script ()
+complianceProofLifecycleTest = do
+  issuer    <- allocateParty "Issuer"
+  evaluator <- allocateParty "TokenProofEvaluator"
+  regulator <- allocateParty "SECReviewer"
+
+  let baseTime = datetime 2026 Apr 13 0 0 0
+
+  -- Both signatories must authorise proof creation.
+  proofCid <- submitMulti [issuer, evaluator] [] $ createCmd ComplianceProof with
+    assetId        = "STABLECOIN-BRALE-2026-001"
+    issuer         = issuer
+    evaluator      = evaluator
+    regulator      = Some regulator
+    classification = "payment_stablecoin"
+    policyVersion  = "GENIUS_v1"
+    decisionStatus = Active
+    proofHash      = "sha256:abc123def456789"
+    timestamp      = baseTime
+
+  -- Verify the proof was created with Active status.
+  Some proof <- queryContractId issuer proofCid
+  assertMsg "Initial status should be Active" (proof.decisionStatus == Active)
+  assertMsg "Classification should match" (proof.classification == "payment_stablecoin")
+
+  -- Evaluator suspends the proof (e.g. reserve signal detected).
+  suspendedCid <- submit evaluator $ exerciseCmd proofCid SuspendProof
+  Some suspended <- queryContractId issuer suspendedCid
+  assertMsg "Status should be Suspended after SuspendProof" (suspended.decisionStatus == Suspended)
+
+  -- Evaluator revokes (violation confirmed).
+  revokedCid <- submit evaluator $ exerciseCmd suspendedCid RevokeProof
+  Some revoked <- queryContractId issuer revokedCid
+  assertMsg "Status should be Revoked after RevokeProof" (revoked.decisionStatus == Revoked)
+
+  -- Cannot revoke a proof that is already Revoked.
+  submitMustFail evaluator $ exerciseCmd revokedCid RevokeProof
+
+  -- Re-evaluation: issuer provides remediation, both parties co-authorise.
+  let newTime = datetime 2026 May 1 0 0 0
+  newProofCid <- submitMulti [issuer, evaluator] [] $ exerciseCmd revokedCid ReEvaluate with
+    newClassification = "payment_stablecoin"
+    newPolicyVersion  = "GENIUS_v2"
+    newProofHash      = "sha256:newHash999aaa"
+    newTimestamp      = newTime
+
+  Some newProof <- queryContractId issuer newProofCid
+  assertMsg "Re-evaluated proof should be Active" (newProof.decisionStatus == Active)
+  assertMsg "Policy version should be updated" (newProof.policyVersion == "GENIUS_v2")
+
+  return ()
