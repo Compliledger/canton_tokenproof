@@ -24,13 +24,20 @@ jobs:
           curl -sSL https://get.digitalasset.com/install/install.sh | sh
           echo "$HOME/.dpm/bin" >> $GITHUB_PATH
 
-      - name: Build DAML packages
-        run: dpm build
-        working-directory: daml
+      - name: Build all DAML packages
+        run: dpm build --all
 
-      - name: Run DAML test suite
+      - name: Test main package
         run: dpm test
         working-directory: daml
+
+      - name: Test CIP-0056 example package
+        run: dpm test
+        working-directory: examples/cip0056-gated-transfer
+
+      - name: Test stablecoin example package
+        run: dpm test
+        working-directory: examples/stablecoin-genius-act
 
   backend-lint:
     name: Backend Lint

@@ -20,6 +20,8 @@ template StablecoinToken
     signatory issuer, owner
     observer  evaluator
 
+    ensure amount > 0.0
+
     -- Transfer checks compliance atomically.
     choice Transfer : ContractId StablecoinToken
       with
@@ -48,7 +50,8 @@ template MintingDelegation
     observer  evaluator, delegate
 
     -- Mint new tokens — GENIUS Act compliance gate fires atomically.
-    choice Mint : ContractId StablecoinToken
+    -- nonconsuming: delegation persists after each mint, reusable until RevokeDelegation.
+    nonconsuming choice Mint : ContractId StablecoinToken
       with
         recipient : Party
         amount    : Decimal
@@ -103,6 +106,7 @@ geniusActMintingDemo = do
     currency  = "USD"
 
   -- Mint SUCCEEDS — GENIUS_v1 proof is Active.
+  -- Delegation is nonconsuming — it persists after each mint.
   tokenCid <- submit delegate $ exerciseCmd delegationCid Mint with
     recipient = customer
     amount    = 100000.0
@@ -110,16 +114,9 @@ geniusActMintingDemo = do
   -- Reserve ratio drops — evaluator suspends the proof.
   suspendedCid <- submit evaluator $ exerciseCmd proofCid SuspendProof
 
-  -- Re-create the delegation (original was consumed by Mint).
-  delegationCid2 <- submit issuer $ createCmd MintingDelegation with
-    issuer    = issuer
-    delegate  = delegate
-    evaluator = evaluator
-    assetId   = assetId
-    currency  = "USD"
-
   -- Mint FAILS — proof is Suspended (reserve backing unconfirmed).
-  submitMustFail delegate $ exerciseCmd delegationCid2 Mint with
+  -- Same delegation contract is reused — nonconsuming choice still active.
+  submitMustFail delegate $ exerciseCmd delegationCid Mint with
     recipient = customer
     amount    = 50000.0
 

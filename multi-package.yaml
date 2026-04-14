@@ -1,0 +1,4 @@
+packages:
+  - ./daml
+  - ./examples/cip0056-gated-transfer
+  - ./examples/stablecoin-genius-act

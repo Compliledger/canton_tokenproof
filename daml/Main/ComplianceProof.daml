@@ -25,6 +25,11 @@ template ComplianceProof
     signatory issuer, evaluator
     observer  regulator
 
+    ensure
+      assetId       /= "" &&
+      proofHash     /= "" &&
+      policyVersion /= ""
+
     key (assetId, evaluator) : (Text, Party)
     maintainer key._2
 

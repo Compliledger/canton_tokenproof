@@ -11,6 +11,7 @@ JWT party authentication replaces ALGO_SENDER_MNEMONIC.
 No private key is stored in this backend.
 """
 
+import json
 import os
 import logging
 from typing import Optional
@@ -148,14 +149,32 @@ def get_proof_by_asset(asset_id: str, issuer_party: str) -> Optional[dict]:
     }
 
     url = f"{LEDGER_API_BASE}/v2/state/active-contracts"
-    response = httpx.post(url, json=payload, headers=_headers(), timeout=30)
 
-    if response.status_code != 200:
-        logger.error("ACS query failed: status=%d", response.status_code)
+    # Canton v2 active-contracts is a streaming endpoint (NDJSON / SSE).
+    # Each line is a GetActiveContractsResponse JSON object, optionally prefixed with 'data: '.
+    # We collect activeContracts from every line until the stream ends.
+    all_contracts: list = []
+    try:
+        with httpx.stream("POST", url, json=payload, headers=_headers(), timeout=30) as r:
+            if r.status_code != 200:
+                logger.error("ACS query failed: status=%d", r.status_code)
+                return None
+            for raw_line in r.iter_lines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    line = line[5:].strip()
+                try:
+                    chunk = json.loads(line)
+                    all_contracts.extend(chunk.get("activeContracts", []))
+                except json.JSONDecodeError:
+                    continue
+    except httpx.HTTPError as exc:
+        logger.error("ACS request failed: %s", exc)
         return None
 
-    contracts = response.json().get("activeContracts", [])
-    for contract in contracts:
+    for contract in all_contracts:
         args = contract.get("createdEvent", {}).get("createArguments", {})
         if args.get("assetId") == asset_id:
             return {
