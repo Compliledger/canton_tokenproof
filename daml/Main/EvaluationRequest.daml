@@ -28,6 +28,10 @@ template EvaluationRequest
     signatory issuer
     observer  evaluator
 
+    ensure
+      assetId    /= "" &&
+      policyPack /= ""
+
     -- Evaluator marks the request as Evaluated (proof anchored off this choice).
     choice MarkEvaluated : ContractId EvaluationRequest
       with

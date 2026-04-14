@@ -21,6 +21,8 @@ template TokenBond
     signatory issuer, owner
     observer  evaluator
 
+    ensure faceValue > 0.0
+
     -- Transfer choice — compliance gate fires atomically inside this transaction.
     -- Step 1: fetch the live proof by key (same tx, no race condition possible).
     -- Step 2: assert Active — if Revoked or Suspended, the entire tx fails.
