@@ -6,8 +6,6 @@ Controls are deterministic rules derived from the GENIUS Act framework.
 This is NOT legal advice. ComplianceGuard enforces controls; it does not encode laws.
 """
 
-from typing import Any
-
 POLICY_VERSION = "GENIUS_v1"
 CLASSIFICATION = "payment_stablecoin"
 

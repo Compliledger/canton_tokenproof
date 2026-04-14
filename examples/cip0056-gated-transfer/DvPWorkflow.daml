@@ -1,10 +1,10 @@
-module Examples.DvPWorkflow where
+module DvPWorkflow where
 
 import Daml.Script
 import DA.Time
 import Main.ComplianceProof
 import Main.Types
-import Examples.TokenBond
+import TokenBond
 
 -- | Payment leg of an atomic DvP — represents Canton Coin allocation.
 -- In production this would be a CIP-0056 fungible holding.
@@ -93,8 +93,8 @@ dvpWorkflowDemo = do
     proofHash      = "sha256:dvpDemo456"
     timestamp      = baseTime
 
-  -- Seller issues bond.
-  bondCid <- submitMulti [seller, seller] [] $ createCmd TokenBond with
+  -- Seller issues bond (seller == owner, one party covers both signatories).
+  bondCid <- submit seller $ createCmd TokenBond with
     issuer       = seller
     owner        = seller
     evaluator    = evaluator

@@ -1,0 +1,15 @@
+sdk-version: 3.4.0
+name: tokenproof-examples-stablecoin
+version: 0.1.0
+source: .
+
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+
+data-dependencies:
+  - ../../daml/.daml/dist/tokenproof-canton-0.1.0.dar
+
+build-options:
+  - --target=2.1

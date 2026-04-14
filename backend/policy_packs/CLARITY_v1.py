@@ -68,7 +68,7 @@ def evaluate(metadata: dict) -> dict:
     results = [checker(metadata) for checker in _CHECKERS]
     all_passed = all(r["passed"] for r in results)
     return {
-        "policyVersion": "CLARITY_v1",
+        "policyVersion": POLICY_VERSION,
         "classification": _CLASSIFICATION_MAP[all_passed],
         "passed": all_passed,
         "controlResults": results,

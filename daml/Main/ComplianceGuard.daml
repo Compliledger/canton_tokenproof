@@ -1,14 +1,16 @@
 module Main.ComplianceGuard where
 
 import Main.ComplianceProof
-import Main.Types
+import Main.Types (DecisionStatus)
 
 -- | View type returned by the ComplianceGuard interface.
+-- NOTE: status is intentionally omitted. Interface views are derived from stored
+-- template fields and are pure — they cannot fetch live proof state.
+-- Always call getComplianceStatus for the authoritative live DecisionStatus.
 data ComplianceGuardView = ComplianceGuardView
   with
     assetId   : Text
     evaluator : Party
-    status    : DecisionStatus
   deriving (Show, Eq)
 
 -- | ComplianceGuard is a DAML interface.
@@ -36,7 +38,6 @@ template ComplianceGuardImpl
         with
           assetId   = assetId
           evaluator = evaluator
-          status    = Active  -- resolved at fetch time, not stored here
 
       -- Fetch the live ComplianceProof by (assetId, evaluator) key.
       -- This happens atomically inside the calling transaction.

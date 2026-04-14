@@ -55,8 +55,8 @@ transferGateTest = do
     proofHash      = "sha256:bondHash123"
     timestamp      = baseTime
 
-  -- Create the bond held by the issuer.
-  bondCid <- submitMulti [issuer, issuer] [] $ createCmd TestBond with
+  -- Create the bond held by the issuer (both signatories are the same party).
+  bondCid <- submit issuer $ createCmd TestBond with
     issuer    = issuer
     owner     = issuer
     evaluator = evaluator

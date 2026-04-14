@@ -38,17 +38,10 @@ complianceProofLifecycleTest = do
   Some suspended <- queryContractId issuer suspendedCid
   assertMsg "Status should be Suspended after SuspendProof" (suspended.decisionStatus == Suspended)
 
-  -- Evaluator revokes (violation confirmed).
-  revokedCid <- submit evaluator $ exerciseCmd suspendedCid RevokeProof
-  Some revoked <- queryContractId issuer revokedCid
-  assertMsg "Status should be Revoked after RevokeProof" (revoked.decisionStatus == Revoked)
-
-  -- Cannot revoke a proof that is already Revoked.
-  submitMustFail evaluator $ exerciseCmd revokedCid RevokeProof
-
-  -- Re-evaluation: issuer provides remediation, both parties co-authorise.
+  -- Re-evaluation from Suspended: issuer provides remediation, both parties co-authorise.
+  -- This is valid — only Revoked is terminal, not Suspended.
   let newTime = datetime 2026 May 1 0 0 0
-  newProofCid <- submitMulti [issuer, evaluator] [] $ exerciseCmd revokedCid ReEvaluate with
+  newProofCid <- submitMulti [issuer, evaluator] [] $ exerciseCmd suspendedCid ReEvaluate with
     newClassification = "payment_stablecoin"
     newPolicyVersion  = "GENIUS_v2"
     newProofHash      = "sha256:newHash999aaa"
@@ -57,5 +50,21 @@ complianceProofLifecycleTest = do
   Some newProof <- queryContractId issuer newProofCid
   assertMsg "Re-evaluated proof should be Active" (newProof.decisionStatus == Active)
   assertMsg "Policy version should be updated" (newProof.policyVersion == "GENIUS_v2")
+
+  -- Evaluator revokes (violation confirmed on a separate proof lifecycle).
+  revokedCid <- submit evaluator $ exerciseCmd newProofCid RevokeProof
+  Some revoked <- queryContractId issuer revokedCid
+  assertMsg "Status should be Revoked after RevokeProof" (revoked.decisionStatus == Revoked)
+
+  -- Cannot revoke a proof that is already Revoked.
+  submitMustFail evaluator $ exerciseCmd revokedCid RevokeProof
+
+  -- Revoked is terminal — ReEvaluate must fail on a Revoked proof.
+  -- Issuer must deploy a new ComplianceProof with a new assetId instead.
+  submitMustFail [issuer, evaluator] $ exerciseCmd revokedCid ReEvaluate with
+    newClassification = "payment_stablecoin"
+    newPolicyVersion  = "GENIUS_v3"
+    newProofHash      = "sha256:blockedHash"
+    newTimestamp      = newTime
 
   return ()

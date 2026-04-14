@@ -1,4 +1,4 @@
-module Examples.StablecoinToken where
+module StablecoinToken where
 
 import Daml.Script
 import DA.Time

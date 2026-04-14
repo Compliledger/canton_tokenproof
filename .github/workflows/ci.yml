@@ -21,8 +21,8 @@ jobs:
 
       - name: Install DPM (Canton SDK 3.4)
         run: |
-          curl -sSL https://get.canton.network/dpm/install.sh | bash
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          curl -sSL https://get.digitalasset.com/install/install.sh | sh
+          echo "$HOME/.dpm/bin" >> $GITHUB_PATH
 
       - name: Build DAML packages
         run: dpm build
@@ -51,6 +51,10 @@ jobs:
         run: pip install ruff && ruff check .
         working-directory: backend
 
+      - name: Run backend unit tests
+        run: python -m pytest tests/ -v
+        working-directory: backend
+
   sdk-build:
     name: TypeScript SDK Build
     runs-on: ubuntu-latest
@@ -62,7 +66,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: sdk/package.json
+          cache-dependency-path: sdk/package-lock.json
 
       - name: Install SDK dependencies
         run: npm install

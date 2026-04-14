@@ -47,6 +47,7 @@ template ComplianceProof
 
     -- ReEvaluate: creates a new versioned proof. Archives the current one.
     -- Both parties must co-authorise re-evaluation.
+    -- Revoked is terminal — a new assetId is required. This guards that invariant.
     choice ReEvaluate : ContractId ComplianceProof
       with
         newClassification : Text
@@ -55,6 +56,8 @@ template ComplianceProof
         newTimestamp      : Time
       controller issuer, evaluator
       do
+        assertMsg "Cannot re-evaluate a Revoked proof; deploy a new ComplianceProof with a new assetId"
+          (decisionStatus /= Revoked)
         create this with
           classification = newClassification
           policyVersion  = newPolicyVersion

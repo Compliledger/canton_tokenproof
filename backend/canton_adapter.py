@@ -19,17 +19,27 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-LEDGER_API_BASE = os.getenv("CANTON_LEDGER_API_URL", "http://localhost:7575")
-EVALUATOR_JWT   = os.getenv("CANTON_EVALUATOR_JWT", "")
-EVALUATOR_PARTY = os.getenv("CANTON_EVALUATOR_PARTY", "TokenProofEvaluator::placeholder")
-APP_ID          = "tokenproof-canton"
+LEDGER_API_BASE  = os.getenv("CANTON_LEDGER_API_URL", "http://localhost:7575")
+EVALUATOR_JWT    = os.getenv("CANTON_EVALUATOR_JWT", "")
+EVALUATOR_PARTY  = os.getenv("CANTON_EVALUATOR_PARTY", "TokenProofEvaluator::placeholder")
+APP_ID           = "tokenproof-canton"
 
-COMPLIANCE_PROOF_TEMPLATE = "Main.ComplianceProof:ComplianceProof"
+# Package hash is set after `dpm damlc inspect-dar --json .daml/dist/*.dar | jq .main_package_id`
+# Required by Canton JSON Ledger API v2: format is <packageId>:Module.Name:TemplateName
+_PROOF_PACKAGE_ID = os.getenv("TOKENPROOF_PACKAGE_ID", "")
 
-_HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {EVALUATOR_JWT}",
-}
+
+def _template_id(module: str, entity: str) -> str:
+    """Build a fully-qualified Canton v2 template ID.
+    Falls back to short form during local sandbox development only.
+    Set TOKENPROOF_PACKAGE_ID after dpm build for any live network.
+    """
+    if _PROOF_PACKAGE_ID:
+        return f"{_PROOF_PACKAGE_ID}:{module}:{entity}"
+    return f"{module}:{entity}"
+
+
+COMPLIANCE_PROOF_TEMPLATE = _template_id("Main.ComplianceProof", "ComplianceProof")
 
 
 def _headers() -> dict:
@@ -90,11 +100,19 @@ def create_compliance_proof(
 
     if response.status_code == 200:
         data = response.json()
-        contract_id = (
-            data.get("result", {})
-                .get("completionOffset") or
-            data.get("transactionId", "")
-        )
+        try:
+            events = (
+                data.get("result", {})
+                    .get("transaction", {})
+                    .get("events", [])
+            )
+            contract_id = next(
+                (e["created"]["contractId"]
+                 for e in events if "created" in e),
+                "",
+            )
+        except (KeyError, StopIteration, TypeError):
+            contract_id = ""
         logger.info("ComplianceProof created: assetId=%s contractId=%s", asset_id, contract_id)
         return {"success": True, "contractId": contract_id, "raw": data}
 
@@ -159,8 +177,9 @@ def allocate_party(display_name: str, party_id_hint: str) -> dict:
     Uses POST /v2/parties/allocate — NOT the deprecated daml ledger allocate-parties.
     """
     payload = {
-        "partyIdHint":  party_id_hint,
-        "displayName":  display_name,
+        "partyIdHint":        party_id_hint,
+        "displayName":        display_name,
+        "identityProviderId": "",
     }
 
     url = f"{LEDGER_API_BASE}/v2/parties/allocate"

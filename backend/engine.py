@@ -10,9 +10,7 @@ the result as a ComplianceProof contract on the ledger.
 
 import hashlib
 import json
-import time
 from datetime import datetime, timezone
-from typing import Optional
 
 from policy_packs import REGISTRY
 
@@ -23,12 +21,6 @@ ASSET_BUCKETS = {
     "digital_tool",
     "digital_collectible",
     "mixed_or_unclassified",
-}
-
-POLICY_TO_BUCKET = {
-    "GENIUS_v1": "payment_stablecoin",
-    "CLARITY_v1": "digital_commodity",
-    "SEC_CLASSIFICATION_v1": "digital_security",
 }
 
 
@@ -101,8 +93,6 @@ def multi_pack_classify(asset_id: str, metadata: dict) -> dict:
 
     if len(passing_buckets) == 1:
         final_classification = passing_buckets[0]
-    elif len(passing_buckets) == 0:
-        final_classification = "mixed_or_unclassified"
     else:
         final_classification = "mixed_or_unclassified"
 

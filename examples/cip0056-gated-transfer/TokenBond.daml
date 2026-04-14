@@ -1,4 +1,4 @@
-module Examples.TokenBond where
+module TokenBond where
 
 import Daml.Script
 import DA.Time
@@ -65,8 +65,8 @@ atomicDvPDemo = do
     proofHash      = "sha256:abc123def456"
     timestamp      = baseTime
 
-  -- Issue the bond to the issuer's own account.
-  bondCid <- submitMulti [issuer, issuer] [] $ createCmd TokenBond with
+  -- Issue the bond to the issuer's own account (issuer == owner, one party covers both signatories).
+  bondCid <- submit issuer $ createCmd TokenBond with
     issuer       = issuer
     owner        = issuer
     evaluator    = evaluator
