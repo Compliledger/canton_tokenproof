@@ -2,6 +2,7 @@ module StablecoinToken where
 
 import Daml.Script
 import DA.Time
+import DA.Date
 import Main.ComplianceProof
 import Main.Types
 
@@ -17,18 +18,20 @@ template StablecoinToken
     amount    : Decimal
     currency  : Text
   where
-    signatory issuer, owner
-    observer  evaluator
+    signatory issuer
+    observer  owner, evaluator
 
     ensure amount > 0.0
 
     -- Transfer checks compliance atomically.
+    -- Caller passes proofCid explicitly (Canton 3.4: no global contract keys).
     choice Transfer : ContractId StablecoinToken
       with
         newOwner : Party
+        proofCid : ContractId ComplianceProof
       controller owner
       do
-        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        proof <- fetch proofCid
         assertMsg
           ("Transfer blocked: GENIUS_v1 proof status is " <> show proof.decisionStatus)
           (proof.decisionStatus == Active)
@@ -51,13 +54,18 @@ template MintingDelegation
 
     -- Mint new tokens — GENIUS Act compliance gate fires atomically.
     -- nonconsuming: delegation persists after each mint, reusable until RevokeDelegation.
+    -- Caller passes proofCid explicitly (Canton 3.4: no global contract keys).
+    -- issuer is co-controller: issuer is a ComplianceProof stakeholder so
+    -- fetch(proofCid) is authorised. Also correct for GENIUS Act — the
+    -- reserve holder must explicitly co-approve every new token issuance.
     nonconsuming choice Mint : ContractId StablecoinToken
       with
         recipient : Party
         amount    : Decimal
-      controller delegate
+        proofCid  : ContractId ComplianceProof
+      controller issuer, delegate
       do
-        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        proof <- fetch proofCid
         assertMsg
           ("Mint blocked: GENIUS_v1 proof not Active — " <> show proof.decisionStatus)
           (proof.decisionStatus == Active)
@@ -82,7 +90,7 @@ geniusActMintingDemo = do
   evaluator <- allocateParty "TokenProofEvaluator"
   customer  <- allocateParty "InstitutionalBuyer"
 
-  let baseTime = datetime 2026 Apr 13 0 0 0
+  let baseTime = time (date 2026 Apr 13) 0 0 0
   let assetId  = "BRALE-USD-2026"
 
   -- GENIUS_v1 compliance proof — reserve attestation passed.
@@ -105,19 +113,24 @@ geniusActMintingDemo = do
     assetId   = assetId
     currency  = "USD"
 
-  -- Mint SUCCEEDS — GENIUS_v1 proof is Active.
+  -- Mint SUCCEEDS — GENIUS_v1 proof is Active; pass proofCid explicitly.
   -- Delegation is nonconsuming — it persists after each mint.
-  tokenCid <- submit delegate $ exerciseCmd delegationCid Mint with
+  -- issuer co-signs: reserve holder approves the mint (GENIUS Act model).
+  tokenCid <- submitMulti [issuer, delegate] [] $ exerciseCmd delegationCid Mint with
     recipient = customer
     amount    = 100000.0
+    proofCid  = proofCid
 
   -- Reserve ratio drops — evaluator suspends the proof.
+  -- SuspendProof archives old contract, creates new one with Suspended status.
   suspendedCid <- submit evaluator $ exerciseCmd proofCid SuspendProof
 
   -- Mint FAILS — proof is Suspended (reserve backing unconfirmed).
   -- Same delegation contract is reused — nonconsuming choice still active.
-  submitMustFail delegate $ exerciseCmd delegationCid Mint with
+  -- Pass suspendedCid — assertMsg fails because decisionStatus == Suspended.
+  submitMustFail [issuer, delegate] $ exerciseCmd delegationCid Mint with
     recipient = customer
     amount    = 50000.0
+    proofCid  = suspendedCid
 
   return ()

@@ -1,8 +1,5 @@
 module Main.EvaluationRequest where
 
-import DA.Time
-import Main.Types
-
 -- | Lifecycle stages of an evaluation request.
 data EvaluationStatus
   = Pending

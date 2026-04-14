@@ -2,6 +2,7 @@ module DvPWorkflow where
 
 import Daml.Script
 import DA.Time
+import DA.Date
 import Main.ComplianceProof
 import Main.Types
 import TokenBond
@@ -40,23 +41,20 @@ template DvPProposal
     signatory buyer
     observer  seller, evaluator
 
-    -- Seller accepts — compliance check fires, payment settles, bond transfers.
-    -- All three steps are inside one Canton transaction.
+    -- Seller accepts — compliance gate, bond transfer, and payment settle atomically.
+    -- proofCid is passed by the caller; TokenBond.Transfer enforces Active status.
     choice Accept : (ContractId TokenBond, ContractId PaymentAllocation)
       with
         newBondOwner : Party
+        proofCid     : ContractId ComplianceProof
       controller seller
       do
-        -- Step 1: verify compliance proof is Active (atomic check).
-        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
-        assertMsg
-          ("DvP blocked: compliance proof status is " <> show proof.decisionStatus)
-          (proof.decisionStatus == Active)
+        -- Step 1: transfer the bond — compliance gate fires inside Transfer.
+        newBondCid <- exercise bondCid Transfer with
+          newOwner = buyer
+          proofCid = proofCid
 
-        -- Step 2: transfer the bond to the buyer.
-        newBondCid <- exercise bondCid Transfer with newOwner = buyer
-
-        -- Step 3: settle the payment leg.
+        -- Step 2: settle the payment leg.
         paymentCid <- create PaymentAllocation with
           payer    = buyer
           payee    = seller
@@ -78,7 +76,7 @@ dvpWorkflowDemo = do
   buyer     <- allocateParty "JPMorganBuyer"
   evaluator <- allocateParty "TokenProofEvaluator"
 
-  let baseTime = datetime 2026 Apr 13 0 0 0
+  let baseTime = time (date 2026 Apr 13) 0 0 0
   let assetId  = "BOND-GS-2026-002"
 
   -- Anchor compliance proof.
@@ -113,8 +111,9 @@ dvpWorkflowDemo = do
     currency      = "USD"
     bondCid       = bondCid
 
-  -- Seller accepts — atomic: compliance check + bond transfer + payment in one tx.
+  -- Seller accepts — atomic: compliance gate + bond transfer + payment in one tx.
   (newBondCid, paymentCid) <- submit seller $ exerciseCmd proposalCid Accept with
     newBondOwner = buyer
+    proofCid     = proofCid
 
   return ()

@@ -1,26 +1,26 @@
 module Main.ComplianceGuard where
 
 import Main.ComplianceProof
-import Main.Types (DecisionStatus)
+import Main.Types
 
 -- | View type returned by the ComplianceGuard interface.
--- NOTE: status is intentionally omitted. Interface views are derived from stored
--- template fields and are pure — they cannot fetch live proof state.
--- Always call getComplianceStatus for the authoritative live DecisionStatus.
 data ComplianceGuardView = ComplianceGuardView
   with
     assetId   : Text
     evaluator : Party
   deriving (Show, Eq)
 
--- | ComplianceGuard is a DAML interface.
+-- | ComplianceGuard is a Daml interface.
 -- Any CIP-0056 token implementation can implement this interface to add
--- an atomic compliance precondition on its Transfer choice.
--- The getComplianceStatus method reads proof state inside the same
--- Canton transaction as the asset movement — no race condition possible.
+-- an atomic compliance precondition on its Transfer or Mint choice.
+--
+-- Canton 3.4 / Daml-LF 2.x: global contract keys removed.
+-- checkCompliance takes the ContractId explicitly. fetch on an archived
+-- contract fails atomically — Revoked/Suspended proofs are archived on
+-- state transition, so the gate is inherently race-condition free.
 interface ComplianceGuard where
   viewtype ComplianceGuardView
-  getComplianceStatus : Update DecisionStatus
+  checkCompliance : ContractId ComplianceProof -> Update ()
 
 -- | Concrete implementation of ComplianceGuard backed by a ComplianceProof contract.
 -- The evaluator is signatory; the issuer is observer.
@@ -39,8 +39,12 @@ template ComplianceGuardImpl
           assetId   = assetId
           evaluator = evaluator
 
-      -- Fetch the live ComplianceProof by (assetId, evaluator) key.
-      -- This happens atomically inside the calling transaction.
-      getComplianceStatus = do
-        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
-        return proof.decisionStatus
+      -- Fetch the proof by ContractId inside the calling transaction.
+      -- fetch on an archived contract fails — so a Revoked/Suspended proof
+      -- whose contract was archived will cause the entire transaction to abort.
+      checkCompliance proofCid = do
+        proof <- fetch proofCid
+        assertMsg
+          ("Compliance gate blocked: proof status is " <> show proof.decisionStatus
+           <> " — only Active permits this operation")
+          (proof.decisionStatus == Active)

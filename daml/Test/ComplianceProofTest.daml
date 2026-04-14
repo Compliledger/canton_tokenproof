@@ -2,6 +2,7 @@ module Test.ComplianceProofTest where
 
 import Daml.Script
 import DA.Time
+import DA.Date
 import Main.ComplianceProof
 import Main.Types
 
@@ -14,7 +15,7 @@ complianceProofLifecycleTest = do
   evaluator <- allocateParty "TokenProofEvaluator"
   regulator <- allocateParty "SECReviewer"
 
-  let baseTime = datetime 2026 Apr 13 0 0 0
+  let baseTime = time (date 2026 Apr 13) 0 0 0
 
   -- Both signatories must authorise proof creation.
   proofCid <- submitMulti [issuer, evaluator] [] $ createCmd ComplianceProof with
@@ -40,7 +41,7 @@ complianceProofLifecycleTest = do
 
   -- Re-evaluation from Suspended: issuer provides remediation, both parties co-authorise.
   -- This is valid — only Revoked is terminal, not Suspended.
-  let newTime = datetime 2026 May 1 0 0 0
+  let newTime = time (date 2026 May 1) 0 0 0
   newProofCid <- submitMulti [issuer, evaluator] [] $ exerciseCmd suspendedCid ReEvaluate with
     newClassification = "payment_stablecoin"
     newPolicyVersion  = "GENIUS_v2"

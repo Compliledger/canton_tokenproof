@@ -1,7 +1,25 @@
-# DAML build artifacts
-daml/.daml/
-daml/**/*.dar
-*.dar
+# DAML build artifacts — ignore .daml/ cache at every depth
+**/.daml/
+**/package-database/
+daml/dist/
+daml/.daml-build/
+**/*.dar
+daml/log/
+daml/*.conf
+tokenproof-auth.conf
+
+# Canton / DPM
+.dpm/
+canton-data/
+*.db
+*.log
+
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
 
 # Python
 __pycache__/

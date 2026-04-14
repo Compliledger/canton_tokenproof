@@ -2,6 +2,7 @@ module Test.TransferGateTest where
 
 import Daml.Script
 import DA.Time
+import DA.Date
 import Main.ComplianceProof
 import Main.Types
 
@@ -14,18 +15,19 @@ template TestBond
     evaluator : Party
     assetId   : Text
   where
-    signatory issuer, owner
-    observer  evaluator
+    signatory issuer
+    observer  owner, evaluator
 
     -- Transfer enforces the compliance gate atomically.
-    -- fetchByKey reads the live proof inside this very transaction —
-    -- no race condition between check and execution is possible.
+    -- Canton 3.4: caller passes proofCid explicitly; fetch on an archived
+    -- or Revoked proof aborts the entire transaction.
     choice Transfer : ContractId TestBond
       with
         newOwner : Party
+        proofCid : ContractId ComplianceProof
       controller owner
       do
-        (_, proof) <- fetchByKey @ComplianceProof (assetId, evaluator)
+        proof <- fetch proofCid
         assertMsg
           ("Transfer blocked: compliance proof status is " <> show proof.decisionStatus)
           (proof.decisionStatus == Active)
@@ -41,7 +43,7 @@ transferGateTest = do
   evaluator <- allocateParty "TokenProofEvaluator"
 
   let assetId  = "BOND-GS-2026-001"
-  let baseTime = datetime 2026 Apr 13 0 0 0
+  let baseTime = time (date 2026 Apr 13) 0 0 0
 
   -- Create an Active compliance proof for the bond.
   proofCid <- submitMulti [issuer, evaluator] [] $ createCmd ComplianceProof with
@@ -62,14 +64,19 @@ transferGateTest = do
     evaluator = evaluator
     assetId   = assetId
 
-  -- Transfer SUCCEEDS — proof is Active.
-  buyerBondCid <- submit issuer $ exerciseCmd bondCid Transfer with newOwner = buyer
+  -- Transfer SUCCEEDS — proof is Active; pass proofCid explicitly.
+  buyerBondCid <- submit issuer $ exerciseCmd bondCid Transfer with
+    newOwner = buyer
+    proofCid = proofCid
 
   -- Evaluator revokes the proof (e.g. SEC investigation opened).
-  submit evaluator $ exerciseCmd proofCid RevokeProof
+  -- RevokeProof archives old contract, returns new one with Revoked status.
+  revokedCid <- submit evaluator $ exerciseCmd proofCid RevokeProof
 
   -- Transfer FAILS — submitMustFail confirms atomic enforcement.
-  -- The assertMsg inside Transfer produces: "Transfer blocked: compliance proof status is Revoked"
-  submitMustFail buyer $ exerciseCmd buyerBondCid Transfer with newOwner = issuer
+  -- revokedCid has decisionStatus = Revoked — assertMsg fires and aborts tx.
+  submitMustFail buyer $ exerciseCmd buyerBondCid Transfer with
+    newOwner = issuer
+    proofCid = revokedCid
 
   return ()

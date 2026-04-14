@@ -45,10 +45,10 @@ COMPLIANCE_PROOF_TEMPLATE = _template_id("Main.ComplianceProof", "ComplianceProo
 
 def _headers() -> dict:
     jwt = os.getenv("CANTON_EVALUATOR_JWT", EVALUATOR_JWT)
-    return {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {jwt}",
-    }
+    headers = {"Content-Type": "application/json"}
+    if jwt:
+        headers["Authorization"] = f"Bearer {jwt}"
+    return headers
 
 
 def create_compliance_proof(
@@ -65,11 +65,8 @@ def create_compliance_proof(
     Uses POST /v2/commands/submit-and-wait (JSON Ledger API).
     Returns the contract ID on success.
     """
-    regulator_field = (
-        {"tag": "Some", "value": regulator_party}
-        if regulator_party
-        else {"tag": "None", "value": {}}
-    )
+    # Canton JSON Ledger API v2: Optional uses null for None, bare value for Some.
+    regulator_field = regulator_party if regulator_party else None
 
     payload = {
         "commands": [
@@ -83,7 +80,7 @@ def create_compliance_proof(
                         "regulator":      regulator_field,
                         "classification": classification,
                         "policyVersion":  policy_version,
-                        "decisionStatus": {"tag": "Active"},
+                        "decisionStatus": "Active",
                         "proofHash":      proof_hash,
                         "timestamp":      timestamp,
                     },
@@ -94,6 +91,7 @@ def create_compliance_proof(
         "readAs":       [],
         "applicationId": APP_ID,
         "commandId":    f"create-proof-{asset_id}-{policy_version}",
+        "userId":       os.getenv("CANTON_USER_ID", "participant_admin"),
     }
 
     url = f"{LEDGER_API_BASE}/v2/commands/submit-and-wait"
@@ -101,21 +99,9 @@ def create_compliance_proof(
 
     if response.status_code == 200:
         data = response.json()
-        try:
-            events = (
-                data.get("result", {})
-                    .get("transaction", {})
-                    .get("events", [])
-            )
-            contract_id = next(
-                (e["created"]["contractId"]
-                 for e in events if "created" in e),
-                "",
-            )
-        except (KeyError, StopIteration, TypeError):
-            contract_id = ""
-        logger.info("ComplianceProof created: assetId=%s contractId=%s", asset_id, contract_id)
-        return {"success": True, "contractId": contract_id, "raw": data}
+        update_id = data.get("updateId", "")
+        logger.info("ComplianceProof created: assetId=%s updateId=%s", asset_id, update_id)
+        return {"success": True, "updateId": update_id, "contractId": "", "raw": data}
 
     logger.error(
         "Failed to create ComplianceProof: status=%d body=%s",
@@ -127,62 +113,58 @@ def create_compliance_proof(
 def get_proof_by_asset(asset_id: str, issuer_party: str) -> Optional[dict]:
     """
     Query the Active Contract Service for a ComplianceProof by assetId.
-    Uses POST /v2/state/active-contracts (JSON Ledger API).
+    Uses POST /v2/state/active-contracts (Canton JSON Ledger API v2).
     Returns the proof payload or None if not found.
     """
+    # v2 requires activeAtOffset — fetch current ledger end first.
+    try:
+        end_resp = httpx.get(f"{LEDGER_API_BASE}/v2/state/ledger-end", headers=_headers(), timeout=10)
+        offset = end_resp.json().get("offset", "0")
+    except Exception as exc:
+        logger.error("Failed to fetch ledger-end: %s", exc)
+        return None
+
     payload = {
         "filter": {
             "filtersByParty": {
-                issuer_party: {
-                    "cumulative": [
-                        {
-                            "templateFilter": {
-                                "templateId": COMPLIANCE_PROOF_TEMPLATE,
-                                "includeCreatedEventBlob": False,
-                            }
-                        }
-                    ]
-                }
+                issuer_party: {}
             }
         },
-        "verbose": True,
+        "verbose":         True,
+        "activeAtOffset":  str(offset),
+        "userId":          os.getenv("CANTON_USER_ID", "participant_admin"),
     }
 
     url = f"{LEDGER_API_BASE}/v2/state/active-contracts"
 
-    # Canton v2 active-contracts is a streaming endpoint (NDJSON / SSE).
-    # Each line is a GetActiveContractsResponse JSON object, optionally prefixed with 'data: '.
-    # We collect activeContracts from every line until the stream ends.
-    all_contracts: list = []
+    # v2 returns a JSON array (not NDJSON) of objects with contractEntry.JsActiveContract.
     try:
-        with httpx.stream("POST", url, json=payload, headers=_headers(), timeout=30) as r:
-            if r.status_code != 200:
-                logger.error("ACS query failed: status=%d", r.status_code)
-                return None
-            for raw_line in r.iter_lines():
-                line = raw_line.strip()
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-                try:
-                    chunk = json.loads(line)
-                    all_contracts.extend(chunk.get("activeContracts", []))
-                except json.JSONDecodeError:
-                    continue
-    except httpx.HTTPError as exc:
+        r = httpx.post(url, json=payload, headers=_headers(), timeout=30)
+        if r.status_code != 200:
+            logger.error("ACS query failed: status=%d body=%s", r.status_code, r.text[:200])
+            return None
+        entries = r.json()
+    except Exception as exc:
         logger.error("ACS request failed: %s", exc)
         return None
 
-    for contract in all_contracts:
-        args = contract.get("createdEvent", {}).get("createArguments", {})
+    for entry in entries:
+        created = (
+            entry.get("contractEntry", {})
+                 .get("JsActiveContract", {})
+                 .get("createdEvent", {})
+        )
+        tid = created.get("templateId", "")
+        if "ComplianceProof" not in tid:
+            continue
+        args = created.get("createArgument", {})
         if args.get("assetId") == asset_id:
             return {
-                "contractId":     contract["createdEvent"]["contractId"],
+                "contractId":     created.get("contractId", ""),
                 "assetId":        args.get("assetId"),
                 "classification": args.get("classification"),
                 "policyVersion":  args.get("policyVersion"),
-                "decisionStatus": args.get("decisionStatus", {}).get("tag", "Unknown"),
+                "decisionStatus": args.get("decisionStatus", "Unknown"),
                 "proofHash":      args.get("proofHash"),
                 "timestamp":      args.get("timestamp"),
             }

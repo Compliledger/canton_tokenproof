@@ -1,6 +1,5 @@
 module Main.ComplianceProof where
 
-import DA.Time
 import Main.Types
 
 -- | Core on-ledger compliance record.
@@ -8,8 +7,10 @@ import Main.Types
 -- unilaterally. The regulator is an Optional Party observer: scoped,
 -- read-only access with no ability to exercise choices.
 --
--- fetchByKey key: (assetId, evaluator)
--- Used by ComplianceGuard.getComplianceStatus inside Transfer choices.
+-- Canton 3.4 / Daml-LF 2.x: global contract keys are not supported.
+-- Callers hold ContractId ComplianceProof explicitly and pass it to
+-- Transfer / Mint choices. fetch() on an archived contract fails —
+-- this preserves atomicity without needing fetchByKey.
 template ComplianceProof
   with
     assetId        : Text           -- CIP-0056 token identifier
@@ -29,9 +30,6 @@ template ComplianceProof
       assetId       /= "" &&
       proofHash     /= "" &&
       policyVersion /= ""
-
-    key (assetId, evaluator) : (Text, Party)
-    maintainer key._2
 
     -- Suspend: evaluator flags a compliance concern.
     -- Transfers are blocked while Suspended.

@@ -1,4 +1,4 @@
-sdk-version: 3.4.0
+sdk-version: 3.4.11
 name: tokenproof-examples-cip0056
 version: 0.1.0
 source: .
@@ -11,5 +11,3 @@ dependencies:
 data-dependencies:
   - ../../daml/.daml/dist/tokenproof-canton-0.1.0.dar
 
-build-options:
-  - --target=2.1
