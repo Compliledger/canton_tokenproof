@@ -51,7 +51,7 @@ Canton has the protocol infrastructure for atomic, privacy-preserving settlement
 - **`ComplianceGuard`** — a DAML interface; implement it on any CIP-0056 token to add a compliance precondition that fires inside the same transaction as the asset movement
 - **Classification Engine** — deterministic Python/FastAPI service evaluating assets against GENIUS Act, CLARITY Act, and SEC classification frameworks
 - **Canton Adapter** — uses Canton's JSON Ledger API v2 (port 6864)
-- **TypeScript SDK** — `@tokenproof/canton-sdk`; uses `@c7/ledger`, not the deprecated `@daml/ledger`
+- **TypeScript SDK** — `@tokenproof/canton-sdk`; M1–M3 wraps the FastAPI backend via axios. M4 will wire `@c7/ledger` for direct gRPC Ledger API access (not the deprecated `@daml/ledger`)
 
 ### Contract architecture
 
