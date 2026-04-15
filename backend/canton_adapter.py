@@ -2,7 +2,7 @@
 canton_adapter.py — Canton Ledger API adapter.
 Replaces algorand_adapter.py entirely. No Algorand code remains here.
 
-Uses Canton's JSON Ledger API (port 7575) for:
+Uses Canton's JSON Ledger API v2 (port 6864) for:
   - ComplianceProof contract creation  (POST /v2/commands/submit-and-wait)
   - Active Contract Service queries    (POST /v2/state/active-contracts)
   - Party allocation                   (POST /v2/parties/allocate)
@@ -11,7 +11,6 @@ JWT party authentication replaces ALGO_SENDER_MNEMONIC.
 No private key is stored in this backend.
 """
 
-import json
 import os
 import logging
 from typing import Optional
@@ -20,7 +19,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-LEDGER_API_BASE  = os.getenv("CANTON_LEDGER_API_URL", "http://localhost:7575")
+LEDGER_API_BASE  = os.getenv("CANTON_LEDGER_API_URL", "http://localhost:6864")
 EVALUATOR_JWT    = os.getenv("CANTON_EVALUATOR_JWT", "")
 EVALUATOR_PARTY  = os.getenv("CANTON_EVALUATOR_PARTY", "TokenProofEvaluator::placeholder")
 APP_ID           = "tokenproof-canton"

@@ -24,6 +24,8 @@ def _check_issuer_permitted_entity(metadata: dict) -> dict:
         "insured_depository_institution",
         "federal_qualified_nonbank",
         "state_qualified_nonbank",
+        "bank",
+        "bank_trust",
     )
     return {
         "control": "issuer_permitted_entity",

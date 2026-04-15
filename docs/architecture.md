@@ -5,11 +5,34 @@
 TokenProof is composed of four layers. Each layer is independently replaceable and open-sourced under Apache 2.0.
 
 | Layer | Technology | Purpose |
-|-------|-----------|---------|
-| DAML Contract Layer | DAML SDK 3.4 · dpm build | On-ledger proof contracts, party-scoped privacy |
+|-------|-----------|----------|
+| DAML Contract Layer | DAML SDK 3.4.11 · dpm build | On-ledger proof contracts, party-scoped privacy |
 | Classification Engine | Python 3.11 · FastAPI | Deterministic policy evaluation, 3 packs |
-| Canton Ledger API Adapter | JSON/gRPC Ledger API | Command submission, ACS queries, party allocation |
+| Canton Ledger API Adapter | JSON Ledger API v2 port 6864 | Command submission, ACS queries, party allocation |
 | Developer Surface | TypeScript · React | SDK, dashboard, CIP-0103 integration |
+
+```mermaid
+flowchart TD
+    subgraph Canton Ledger
+        CP[ComplianceProof contract]
+        CG[ComplianceGuard interface]
+        TK[CIP-0056 Token Transfer]
+    end
+    subgraph Backend
+        ENG[Classification Engine\nGENIUS · CLARITY · SEC]
+        ADR[Canton Adapter\nJSON Ledger API v2]
+    end
+    subgraph Developer Surface
+        SDK[TypeScript SDK]
+        DASH[React Dashboard]
+    end
+    ENG -->|evaluate| ADR
+    ADR -->|create ComplianceProof| CP
+    CP -->|fetch atomically| CG
+    CG -->|gate| TK
+    SDK --> ADR
+    DASH --> SDK
+```
 
 ---
 
@@ -22,7 +45,7 @@ The core on-ledger compliance record. Immutable after creation except through ex
 
 - `signatory`: `issuer` (asset issuer) + `evaluator` (TokenProof evaluator)
 - `observer`: `regulator` (Optional Party — scoped read-only)
-- `key`: `(assetId, evaluator)` — allows `fetchByKey` from Transfer choices
+- **No global contract key** — Canton 3.4 / Daml-LF 2.x removed global keys. Callers hold `ContractId ComplianceProof` explicitly and pass it to `Transfer`/`Mint` choices. `fetch` on an archived contract fails atomically — Revoked/Suspended proofs block the transaction inherently.
 - `choices`: `SuspendProof` · `RevokeProof` · `ReEvaluate`
 
 **`Main.EvaluationRequest`**
@@ -40,17 +63,21 @@ A DAML interface any CIP-0056 token can implement to add an atomic compliance pr
 ```daml
 interface ComplianceGuard where
   viewtype ComplianceGuardView
-  getComplianceStatus : Update DecisionStatus
+  checkCompliance : ContractId ComplianceProof -> Update ()
 ```
 
-The `getComplianceStatus` method runs `fetchByKey @ComplianceProof` inside the same Canton transaction as the asset movement. Atomicity is guaranteed by Canton's two-phase commit.
+The `checkCompliance` method `fetch`es the `ComplianceProof` by `ContractId` inside the same Canton transaction as the asset movement. If the proof is `Suspended` or `Revoked` its contract is archived — `fetch` on an archived contract aborts the entire transaction atomically. Atomicity is guaranteed by Canton's two-phase commit.
 
 ### DecisionStatus Lifecycle
 
-```
-Active ──► Suspended ──► Revoked (terminal)
-  ▲              │
-  └──────────────┘  (ReEvaluate creates new Active proof)
+```mermaid
+stateDiagram-v2
+    [*] --> Active : ComplianceProof created
+    Active --> Suspended : SuspendProof — evaluator
+    Suspended --> Active : ReEvaluate — issuer + evaluator
+    Active --> Revoked : RevokeProof — evaluator
+    Suspended --> Revoked : RevokeProof — evaluator
+    Revoked --> [*] : terminal — new assetId required
 ```
 
 - **Active**: transfers permitted
@@ -59,9 +86,58 @@ Active ──► Suspended ──► Revoked (terminal)
 
 ---
 
+## JSON Ledger API Endpoints Used
+
+Sandbox runs on `http://localhost:6864` (HTTP JSON API v2) and `localhost:6865` (gRPC).
+
+| Operation | Endpoint |
+|-----------|----------|
+| Create ComplianceProof | `POST /v2/commands/submit-and-wait` |
+| Query proof by asset | `POST /v2/state/active-contracts` |
+| Allocate party | `POST /v2/parties/allocate` |
+| Get ledger end offset | `GET /v2/ledger-end` |
+| Stream proof events | gRPC Ledger API port 6865 |
+
+**Not used**: deprecated `daml ledger upload-dar`, `daml ledger allocate-parties`, `@daml/ledger`.
+
+### Atomic DvP flow
+
+```mermaid
+flowchart TD
+    A[Backend: POST /evaluate] --> B[Classification Engine runs GENIUS_v1]
+    B --> C[Canton Adapter: POST /v2/commands/submit-and-wait]
+    C --> D[ComplianceProof contract created on ledger]
+    D --> E[Issuer submits Transfer choice with proofCid]
+    E --> F{Canton two-phase commit}
+    F --> G[fetch proofCid inside transaction]
+    G --> H{decisionStatus == Active?}
+    H -- Yes --> I[Transfer contract created ]
+    H -- No --> J[Entire transaction aborted ]
+    style I fill:#2a2,color:#fff
+    style J fill:#c44,color:#fff
+```
+
+---
+
 ## Canton Privacy Model
 
 Canton sub-transaction privacy means each participant sees only the contracts where they are a signatory or observer.
+
+```mermaid
+flowchart TD
+    CP[ComplianceProof contract]
+    ISS[Issuer\nsignatory — sees proof + own tokens]
+    EVL[Evaluator\nsignatory — sees proof lifecycle]
+    REG[Regulator\noptional observer — read-only]
+    SYN[Sync Domain Operator\nencrypted routing only]
+    OTH[Other Participants\nnothing]
+
+    CP -->|visible to| ISS
+    CP -->|visible to| EVL
+    CP -.->|visible if regulator = Some| REG
+    CP -->|never visible to| SYN
+    CP -->|never visible to| OTH
+```
 
 | Party | Sees |
 |-------|------|
@@ -72,19 +148,6 @@ Canton sub-transaction privacy means each participant sees only the contracts wh
 | Other participants | Nothing — Canton sub-transaction privacy |
 
 This model is structurally impossible on any public chain (Ethereum, Algorand).
-
----
-
-## JSON Ledger API Endpoints Used
-
-| Operation | Endpoint |
-|-----------|---------|
-| Create ComplianceProof | `POST /v2/commands/submit-and-wait` |
-| Query proof by asset | `POST /v2/state/active-contracts` |
-| Allocate party | `POST /v2/parties/allocate` |
-| Stream proof events | gRPC Ledger API port 6866 |
-
-**Not used**: deprecated `daml ledger upload-dar`, `daml ledger allocate-parties`, `@daml/ledger`.
 
 ---
 

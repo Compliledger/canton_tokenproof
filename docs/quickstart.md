@@ -1,8 +1,18 @@
 # TokenProof — Quickstart
 
+```mermaid
+flowchart LR
+    A[1. clone + dpm build] --> B[2. dpm sandbox]
+    B --> C[3. start backend]
+    C --> D[4. POST /evaluate]
+    D --> E[5. GET /proof]
+    E --> F[6. POST /verify]
+    style F fill:#2a2,color:#fff
+```
+
 ## Prerequisites
 
-- Canton SDK 3.4 with DPM installed
+- Canton SDK 3.4.11 with DPM installed
 - Python 3.11+
 - Node 20+
 - A Canton participant node (local sandbox or DevNet)
@@ -28,7 +38,7 @@ cd daml
 dpm sandbox
 ```
 
-The local Canton sandbox starts with JSON Ledger API on port 7575.
+The local Canton sandbox starts with JSON Ledger API on **port 6864** (HTTP) and gRPC on port 6865.
 
 ---
 
@@ -38,10 +48,14 @@ The local Canton sandbox starts with JSON Ledger API on port 7575.
 cd backend
 pip install -r requirements.txt
 
-# Configure Canton node connection
-export CANTON_LEDGER_API_URL=http://localhost:7575
-export CANTON_EVALUATOR_JWT=<your-evaluator-jwt>
+# Copy the example env file and fill in your party fingerprints
+cp .env.example .env
+
+# Or export directly:
+export CANTON_LEDGER_API_URL=http://localhost:6864
+export CANTON_EVALUATOR_JWT=
 export CANTON_EVALUATOR_PARTY=<TokenProofEvaluator::fingerprint>
+export TOKENPROOF_PACKAGE_ID=<package-id-from-dpm-build-output>
 
 uvicorn api:app --reload --port 8000
 ```
@@ -119,11 +133,11 @@ console.log(proof.decisionStatus);
 ## 7. Run the DvP example
 
 ```bash
-cd daml
-dpm test --test-name Examples.TokenBond:atomicDvPDemo
+cd examples/cip0056-gated-transfer
+dpm test
 ```
 
-This runs the atomic DvP demo: proof anchored → transfer succeeds → proof revoked → transfer fails (submitMustFail).
+This runs two scripts: `atomicDvPDemo` and `dvpWorkflowDemo`. Both must exit with `ok`. The DvP demo exercises: proof anchored → transfer succeeds → proof revoked → transfer fails (`submitMustFail`).
 
 ---
 
@@ -131,7 +145,7 @@ This runs the atomic DvP demo: proof anchored → transfer succeeds → proof re
 
 | Stage | Command | Notes |
 |-------|---------|-------|
-| Local | `dpm sandbox` | Port 7575, resets on restart |
+| Local | `dpm sandbox` | Port 6864, resets on restart |
 | DevNet | `dpm deploy --network devnet` | Shared Canton DevNet |
 | TestNet | `dpm deploy --network testnet` | Stable, xReserve bridge available |
 | MainNet | Kubernetes validator or NaaS | Canton Global Synchronizer |

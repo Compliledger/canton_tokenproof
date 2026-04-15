@@ -94,23 +94,39 @@ def get_proof(asset_id: str, issuer_party: str):
 def verify_proof(req: VerifyRequest):
     """
     Recompute the proof hash from raw metadata and compare against the on-ledger record.
-    Returns a verified boolean and a list of any differing fields.
+    Fetches the stored proof from ACS to obtain the original timestamp so the hash
+    can be reproduced exactly. Returns verified=True when hashes match.
     """
+    on_ledger_proof = canton_adapter.get_proof_by_asset(req.assetId, req.issuerParty)
+    if on_ledger_proof is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active ComplianceProof found on ledger for assetId={req.assetId}",
+        )
+
+    stored_hash = on_ledger_proof.get("proofHash", req.proofHash)
+    stored_timestamp = on_ledger_proof.get("timestamp")
+
     try:
-        recomputed = engine.classify(req.assetId, req.assetMetadata, req.policyPack)
+        recomputed = engine.classify(
+            req.assetId,
+            req.assetMetadata,
+            req.policyPack,
+            override_timestamp=stored_timestamp,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     recomputed_hash = recomputed["proofHash"]
-    verified = recomputed_hash == req.proofHash
+    verified = recomputed_hash == stored_hash
 
     return {
         "assetId":        req.assetId,
         "verified":       verified,
-        "onLedgerHash":   req.proofHash,
+        "onLedgerHash":   stored_hash,
         "recomputedHash": recomputed_hash,
-        "note": "Hash mismatch may indicate metadata drift or a policy version change."
-                if not verified else "Hashes match — proof is consistent with submitted metadata.",
+        "note": "Hashes match — proof is consistent with on-ledger record."
+                if verified else "Hash mismatch may indicate metadata drift or a policy version change.",
     }
 
 

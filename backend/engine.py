@@ -14,6 +14,16 @@ from datetime import datetime, timezone
 
 from policy_packs import REGISTRY
 
+def _canonicalize_timestamp(timestamp: str) -> str:
+    normalized = timestamp.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(normalized)
+    dt_utc = dt.astimezone(timezone.utc)
+    fraction = dt_utc.strftime("%f").rstrip("0")
+    if fraction:
+        return dt_utc.strftime("%Y-%m-%dT%H:%M:%S") + f".{fraction}Z"
+    return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 ASSET_BUCKETS = {
     "payment_stablecoin",
     "digital_security",
@@ -26,20 +36,22 @@ ASSET_BUCKETS = {
 
 def _compute_proof_hash(asset_id: str, classification: str, policy_version: str,
                         control_results: list, timestamp: str) -> str:
+    canonical_timestamp = _canonicalize_timestamp(timestamp)
     snapshot = json.dumps(
         {
             "assetId": asset_id,
             "classification": classification,
             "policyVersion": policy_version,
             "controlResults": control_results,
-            "timestamp": timestamp,
+            "timestamp": canonical_timestamp,
         },
         sort_keys=True,
     )
     return "sha256:" + hashlib.sha256(snapshot.encode()).hexdigest()
 
 
-def classify(asset_id: str, metadata: dict, policy_pack: str) -> dict:
+def classify(asset_id: str, metadata: dict, policy_pack: str,
+             override_timestamp: str = None) -> dict:
     """
     Run deterministic classification for the given asset metadata against
     the specified policy pack. Returns a full evaluation result including
@@ -56,7 +68,8 @@ def classify(asset_id: str, metadata: dict, policy_pack: str) -> dict:
     evaluator_fn = REGISTRY[policy_pack]
     result = evaluator_fn(metadata)
 
-    timestamp = datetime.now(timezone.utc).isoformat()
+    raw_timestamp = override_timestamp if override_timestamp else datetime.now(timezone.utc).isoformat()
+    timestamp = _canonicalize_timestamp(raw_timestamp)
     proof_hash = _compute_proof_hash(
         asset_id,
         result["classification"],
