@@ -173,6 +173,65 @@ Anchored in `ComplianceProof.proofHash`. Regulator can recompute independently v
 
 ---
 
+## End-to-End Sequence
+
+Full flow from initial evaluation through atomic settlement and independent verification.
+
+```mermaid
+sequenceDiagram
+    actor I  as Issuer
+    actor R  as Regulator
+    participant B  as TokenProof Backend
+    participant CE as Classification Engine
+    participant CA as Canton Adapter
+    participant CL as Canton Ledger
+
+    Note over I,CL: Phase 1 — Evaluate and anchor
+
+    I->>B:  POST /evaluate\n{assetId, metadata, GENIUS_v1}
+    B->>CE: classify(assetId, metadata, GENIUS_v1)
+    CE-->>B: {classification, proofHash, controlResults, timestamp}
+    B->>CA: create_compliance_proof(...)
+    CA->>CL: POST /v2/commands/submit-and-wait\nCreate ComplianceProof
+    CL-->>CA: {updateId}
+    CA-->>B: {success, updateId}
+    B-->>I:  {evaluation, ledger.contractId}
+
+    Note over I,CL: Phase 2 — Atomic transfer
+
+    I->>CL:  Exercise Transfer with proofCid
+    Note over CL: Canton two-phase commit
+    CL->>CL: fetch proofCid (same tx)
+    CL->>CL: assert decisionStatus == Active
+    CL-->>I: Transfer contract created
+
+    Note over I,CL: Phase 3 — Independent verification
+
+    R->>B:  POST /verify\n{assetId, metadata, policyPack}
+    B->>CA: get_proof_by_asset(assetId, issuerParty)
+    CA->>CL: POST /v2/state/active-contracts
+    CL-->>CA: ComplianceProof {proofHash, timestamp}
+    B->>CE: classify(..., override_timestamp=stored_timestamp)
+    CE-->>B: recomputedHash
+    B-->>R:  {verified: true, onLedgerHash, recomputedHash}
+```
+
+---
+
+## Why Canton — Structural Comparison
+
+| Capability | Canton + TokenProof | Ethereum / EVM | Algorand |
+|---|---|---|---|
+| Compliance check in same transaction as transfer | **Yes** — Canton two-phase commit | No — oracle call is a separate transaction | No — separate transaction |
+| Privacy for compliance data | **Sub-transaction privacy** — parties see only their contracts | None — all state is public | None — all state is public |
+| Proof hash independently auditable | **Yes** — `POST /verify` recomputes SHA-256 | Possible with events, but state is public | Possible, but state is public |
+| Compliance state race condition | **Impossible** — `fetch` on archived contract aborts atomically | Possible — block reorg or MEV can reorder | Possible — FIFO not guaranteed |
+| Regulator scoped read access | **Native** — `Optional Party` observer | Impossible without centralized access control | Impossible without centralized access control |
+| Sync domain sees compliance data | **Never** — encrypted routing only | Yes — validators see all | Yes — relay nodes see all |
+| Smart contract can call compliance oracle | No — but not needed; proof is already on-ledger | Requires trusted oracle (Chainlink etc.) | Requires trusted oracle |
+
+---
+
 ## Repository Structure
 
 ```

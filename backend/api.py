@@ -1,21 +1,23 @@
 """
 TokenProof FastAPI backend.
-Exposes three REST endpoints consumed by the TypeScript SDK and React dashboard.
+Exposes REST endpoints consumed by the TypeScript SDK and React dashboard.
 
-POST /evaluate      — run classification engine, anchor proof on Canton
-GET  /proof/{assetId} — query live proof status from Active Contract Service
-POST /verify        — recompute proof hash and compare against on-ledger record
+POST /evaluate            — classify asset metadata + anchor proof on Canton
+POST /evaluate/multi      — classify against all three policy packs at once
+GET  /proof/{assetId}     — query live proof status from Active Contract Service
+POST /verify              — recompute proof hash and compare against on-ledger record
+POST /parties/allocate    — allocate a new Canton party (issuer / regulator onboarding)
+GET  /health              — liveness check
 
-DISCLAIMER: This service runs deterministic classification controls.
-It does not provide legal advice. ComplianceGuard enforces controls;
-it does not encode laws.
+DISCLAIMER: Deterministic classification controls only.
+Not legal advice. ComplianceGuard enforces controls; it does not encode laws.
 """
 
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import engine
 import canton_adapter
@@ -25,34 +27,118 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="TokenProof Canton Backend",
-    description="Compliance classification and proof-anchoring service for the Canton Network.",
+    description=(
+        "Compliance classification and on-ledger proof-anchoring service "
+        "for the Canton Network. Apache 2.0."
+    ),
     version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
+
 class EvaluateRequest(BaseModel):
-    assetId:        str
-    issuerParty:    str
-    policyPack:     str
-    assetMetadata:  dict
-    regulatorParty: Optional[str] = None
-    anchorOnLedger: bool = True
+    assetId:        str = Field(..., description="CIP-0056 token identifier")
+    issuerParty:    str = Field(..., description="Fully-qualified Canton party ID of the asset issuer")
+    policyPack:     str = Field(..., description="Policy pack name: GENIUS_v1 | CLARITY_v1 | SEC_CLASSIFICATION_v1")
+    assetMetadata:  Dict[str, Any] = Field(..., description="Asset metadata evaluated against the policy pack controls")
+    regulatorParty: Optional[str] = Field(None, description="Optional Canton party ID granted read-only observer access")
+    anchorOnLedger: bool = Field(True, description="If true, creates a ComplianceProof contract on the Canton node")
 
 
 class VerifyRequest(BaseModel):
-    assetId:      str
-    issuerParty:  str
-    proofHash:    str
-    policyPack:   str
-    assetMetadata: dict
+    assetId:       str = Field(..., description="CIP-0056 token identifier")
+    issuerParty:   str = Field(..., description="Fully-qualified Canton party ID of the asset issuer")
+    proofHash:     str = Field(..., description="SHA-256 proof hash to verify against on-ledger record")
+    policyPack:    str = Field(..., description="Policy pack used when the proof was originally created")
+    assetMetadata: Dict[str, Any] = Field(..., description="Original asset metadata used in evaluation")
 
 
-@app.post("/evaluate")
+class AllocatePartyRequest(BaseModel):
+    displayName:   str = Field(..., description="Human-readable party display name")
+    partyIdHint:   str = Field(..., description="Hint for the party identifier (used in fingerprint generation)")
+
+
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
+
+class ControlResult(BaseModel):
+    control: str
+    passed:  bool
+    reason:  Optional[str]
+
+
+class EvaluationResult(BaseModel):
+    assetId:        str
+    classification: str
+    policyVersion:  str
+    passed:         bool
+    controlResults: List[ControlResult]
+    proofHash:      str
+    timestamp:      str
+
+
+class LedgerResult(BaseModel):
+    success:    bool
+    updateId:   Optional[str] = None
+    contractId: Optional[str] = None
+    error:      Optional[str] = None
+
+
+class EvaluateResponse(BaseModel):
+    evaluation: EvaluationResult
+    ledger:     Optional[LedgerResult]
+
+
+class ProofStatusResponse(BaseModel):
+    contractId:     str
+    assetId:        str
+    classification: str
+    policyVersion:  str
+    decisionStatus: str
+    proofHash:      str
+    timestamp:      str
+
+
+class VerifyResponse(BaseModel):
+    assetId:        str
+    verified:       bool
+    onLedgerHash:   str
+    recomputedHash: str
+    note:           str
+
+
+class AllocatePartyResponse(BaseModel):
+    success: bool
+    partyId: Optional[str] = None
+    error:   Optional[str] = None
+
+
+class HealthResponse(BaseModel):
+    status:  str
+    version: str
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/health", response_model=HealthResponse, tags=["ops"])
+def health():
+    """Liveness check. Returns service version."""
+    return {"status": "ok", "version": app.version}
+
+
+@app.post("/evaluate", response_model=EvaluateResponse, tags=["compliance"])
 def evaluate_asset(req: EvaluateRequest):
     """
     Run the classification engine against the provided metadata and policy pack.
     If anchorOnLedger is True (default), creates a ComplianceProof on the Canton node.
-    Returns the classification result and, on success, the proof contract details.
     """
     try:
         result = engine.classify(req.assetId, req.assetMetadata, req.policyPack)
@@ -75,7 +161,21 @@ def evaluate_asset(req: EvaluateRequest):
     return {"evaluation": result, "ledger": ledger_result}
 
 
-@app.get("/proof/{asset_id}")
+@app.post("/evaluate/multi", tags=["compliance"])
+def evaluate_multi(req: EvaluateRequest):
+    """
+    Run all three policy packs (GENIUS_v1, CLARITY_v1, SEC_CLASSIFICATION_v1)
+    and return aggregated results. Useful for assets that may span multiple
+    regulatory frameworks. Does not anchor — use /evaluate for anchoring.
+    """
+    try:
+        result = engine.multi_pack_classify(req.assetId, req.assetMetadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result
+
+
+@app.get("/proof/{asset_id}", response_model=ProofStatusResponse, tags=["compliance"])
 def get_proof(asset_id: str, issuer_party: str):
     """
     Query the Active Contract Service for the current ComplianceProof status.
@@ -90,12 +190,12 @@ def get_proof(asset_id: str, issuer_party: str):
     return proof
 
 
-@app.post("/verify")
+@app.post("/verify", response_model=VerifyResponse, tags=["compliance"])
 def verify_proof(req: VerifyRequest):
     """
     Recompute the proof hash from raw metadata and compare against the on-ledger record.
-    Fetches the stored proof from ACS to obtain the original timestamp so the hash
-    can be reproduced exactly. Returns verified=True when hashes match.
+    Fetches the stored proof from ACS to obtain the original timestamp — ensuring the
+    hash is reproduced exactly as it was when anchored. Returns verified=true on match.
     """
     on_ledger_proof = canton_adapter.get_proof_by_asset(req.assetId, req.issuerParty)
     if on_ledger_proof is None:
@@ -125,18 +225,22 @@ def verify_proof(req: VerifyRequest):
         "verified":       verified,
         "onLedgerHash":   stored_hash,
         "recomputedHash": recomputed_hash,
-        "note": "Hashes match — proof is consistent with on-ledger record."
-                if verified else "Hash mismatch may indicate metadata drift or a policy version change.",
+        "note": (
+            "Hashes match — proof is consistent with on-ledger record."
+            if verified else
+            "Hash mismatch — metadata or policy version may have drifted from the original evaluation."
+        ),
     }
 
 
-@app.post("/parties/allocate")
-def allocate_party(display_name: str, party_id_hint: str):
+@app.post("/parties/allocate", response_model=AllocatePartyResponse, tags=["admin"])
+def allocate_party(req: AllocatePartyRequest):
     """
     Allocate a new party on the Canton participant node.
     Used for onboarding issuers and regulator observers.
+    Both display name and party ID hint are required in the request body.
     """
-    result = canton_adapter.allocate_party(display_name, party_id_hint)
+    result = canton_adapter.allocate_party(req.displayName, req.partyIdHint)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Party allocation failed"))
     return result

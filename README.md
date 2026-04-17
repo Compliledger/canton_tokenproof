@@ -1,8 +1,6 @@
 # TokenProof
 
-**TokenProof is a shared compliance infrastructure layer for the Canton Network.**
-
-A privacy-native, on-ledger compliance classification and proof-anchoring primitive for the Canton Global Synchronizer. Any CIP-0056 token implementation can add a `ComplianceGuard` precondition to its `Transfer` choice and gain instant, atomic, privacy-preserving compliance enforcement.
+**Atomic, on-ledger compliance enforcement for tokenized assets on the Canton Network.**
 
 [![CI](https://github.com/Compliledger/canton_tokenproof/actions/workflows/ci.yml/badge.svg)](https://github.com/Compliledger/canton_tokenproof/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
@@ -11,139 +9,229 @@ A privacy-native, on-ledger compliance classification and proof-anchoring primit
 
 ---
 
-## The problem TokenProof solves
+## The problem
 
-Today, when a tokenized bond moves on Canton, compliance is checked **outside** the blockchain:
-
-```mermaid
-flowchart LR
-    A[Compliance API call] --> B[API says yes]
-    B --> C[Brief delay]
-    C --> D[Transfer submitted]
-    style C fill:#f66,color:#fff
-    style D fill:#f66,color:#fff
-```
-
-The gap between steps 2 and 4 is the problem. If a sanctions list updates or a regulatory status changes in that window, the transfer goes through anyway. Nobody can prove after the fact what compliance state was checked or when.
-
-**TokenProof eliminates that gap:**
+Every existing compliance integration on distributed ledgers has the same structural flaw:
 
 ```mermaid
-flowchart LR
-    A[Evaluate asset] --> B[Anchor ComplianceProof on Canton]
-    B --> C[Transfer choice fetches proof atomically]
-    C --> D{Proof Active?}
-    D -- Yes --> E[Transfer succeeds]
-    D -- No --> F[Transaction aborts atomically]
-    style E fill:#2a2,color:#fff
-    style F fill:#c44,color:#fff
+sequenceDiagram
+    participant I as Issuer
+    participant C as Compliance API
+    participant L as Ledger
+    I->>C: Is this asset compliant?
+    C-->>I: Yes (at time T)
+    Note over I,L: ⚠ sanctions list updates here
+    I->>L: Submit transfer
+    L-->>I: Transfer accepted — but compliance state has changed
 ```
 
-Compliance check and transfer are the **same Canton transaction**. Neither can happen without the other. The proof is on-ledger and auditable forever.
+**The check and the transfer are two separate operations.** There is a window between them where regulatory state can change — and nobody can prove after the fact what was checked or when.
 
 ---
 
-## What it does
+## The solution
 
-Canton has the protocol infrastructure for atomic, privacy-preserving settlement. It is missing a shared compliance oracle that token implementations can reference atomically. TokenProof fills that gap.
+TokenProof makes compliance state an **on-ledger property of the transaction itself**:
 
-- **`ComplianceProof`** — an on-ledger DAML contract anchoring classification outcomes, proof hashes, and lifecycle state for any tokenized asset
-- **`ComplianceGuard`** — a DAML interface; implement it on any CIP-0056 token to add a compliance precondition that fires inside the same transaction as the asset movement
-- **Classification Engine** — deterministic Python/FastAPI service evaluating assets against GENIUS Act, CLARITY Act, and SEC classification frameworks
-- **Canton Adapter** — uses Canton's JSON Ledger API v2 (port 6864)
-- **TypeScript SDK** — `@tokenproof/canton-sdk`; M1–M3 wraps the FastAPI backend via axios. M4 will wire `@c7/ledger` for direct gRPC Ledger API access (not the deprecated `@daml/ledger`)
+```mermaid
+sequenceDiagram
+    participant I as Issuer
+    participant B as TokenProof Backend
+    participant L as Canton Ledger
 
-### Contract architecture
+    I->>B: POST /evaluate {assetId, metadata, GENIUS_v1}
+    B->>B: Classify — 5 deterministic controls
+    B->>L: Create ComplianceProof contract (issuer + evaluator co-sign)
+    L-->>B: contractId
+    B-->>I: {classification, proofHash, contractId}
+
+    I->>L: Exercise Transfer with proofCid
+    note over L: Canton two-phase commit begins
+    L->>L: fetch proofCid — same transaction
+    L->>L: assert decisionStatus == Active
+    L-->>I: Transfer succeeds atomically
+
+    note over I,L: If proof is Revoked/Suspended → fetch fails → entire tx aborts
+```
+
+The compliance check is inside the **same Canton transaction** as the asset movement. No race condition is possible. The proof hash is anchored on-ledger and independently verifiable forever.
+
+---
+
+## Architecture
 
 ```mermaid
 graph TD
-    EV[EvaluationRequest\nissuer creates · evaluator processes]
-    CP[ComplianceProof\nissuer + evaluator co-signatories\nregulator optional observer]
-    CG[ComplianceGuard interface\nany CIP-0056 token implements this]
-    TK[Token Transfer choice\ne.g. TokenBond · StablecoinToken]
+    subgraph DAML["DAML Contract Layer  ·  primary deliverable"]
+        CP["ComplianceProof\n─────────────────\nissuer + evaluator  co-signatories\nregulator  optional observer\ndecisionStatus · proofHash · timestamp"]
+        CG["ComplianceGuard  interface\n─────────────────\ncheckCompliance(ContractId ComplianceProof)\nany CIP-0056 token implements this"]
+        ER["EvaluationRequest\n─────────────────\nissuer creates · evaluator processes\nPending → Evaluated → Archived"]
+    end
 
-    EV -->|evaluator anchors| CP
-    CP -->|fetched atomically by| CG
-    CG -->|precondition on| TK
+    subgraph BE["Backend  ·  Python / FastAPI"]
+        ENG["Classification Engine\nGENIUS_v1 · CLARITY_v1 · SEC_v1\nworst-of aggregation · SHA-256 hash"]
+        ADP["Canton Adapter\nJSON Ledger API v2  port 6864\nsubmit-and-wait · ACS · parties"]
+    end
+
+    subgraph SDK["Developer Surface  ·  TypeScript"]
+        TSDK["@tokenproof/canton-sdk\nevaluateAsset · getProofStatus · verifyProof"]
+    end
+
+    ER -->|evaluator anchors| CP
+    CP -->|fetched atomically inside Transfer| CG
+    ENG --> ADP
+    ADP -->|create ComplianceProof| CP
+    TSDK --> ADP
+
+    style DAML fill:#1a1a2e,color:#e0e0ff,stroke:#4444aa
+    style BE fill:#1a2e1a,color:#e0ffe0,stroke:#44aa44
+    style SDK fill:#2e1a1a,color:#ffe0e0,stroke:#aa4444
 ```
 
-### Proof status lifecycle
+### Proof lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Active : ComplianceProof created
-    Active --> Suspended : SuspendProof (evaluator)
-    Suspended --> Active : ReEvaluate (issuer + evaluator)
-    Active --> Revoked : RevokeProof (evaluator)
-    Suspended --> Revoked : RevokeProof (evaluator)
-    Revoked --> [*] : terminal — new assetId required
+    [*] --> Active : ComplianceProof created\n(issuer + evaluator co-sign)
+    Active --> Suspended : SuspendProof\nevaluator flags concern
+    Suspended --> Active : ReEvaluate\nissuer + evaluator co-authorize
+    Active --> Revoked : RevokeProof\nevaluator — irreversible
+    Suspended --> Revoked : RevokeProof\nevaluator — irreversible
+    Revoked --> [*] : terminal\nnew assetId required for reissue
+    note right of Active : Transfer choices permitted
+    note right of Suspended : Transfer choices blocked
+    note right of Revoked : Transfer choices permanently blocked
 ```
 
 ---
 
-## Why this cannot be built on any other chain
+## Parties
 
-Canton sub-transaction privacy means the sync domain operator sees only encrypted routing metadata — never transaction content. Compliance proof data is shared only with parties explicitly granted signatory or observer rights. This is structurally impossible on Ethereum or any public chain.
+Canton sub-transaction privacy means each party sees only what they are explicitly a stakeholder of.
+
+| Party | Role | Sees on ledger | Can exercise |
+|---|---|---|---|
+| **Issuer** | Asset originator | Their ComplianceProof, EvaluationRequest, own tokens | ReEvaluate (co-sign), Transfer |
+| **Evaluator** | TokenProof service | Every ComplianceProof they co-signed | SuspendProof, RevokeProof, MarkEvaluated |
+| **Regulator** | Optional observer | ComplianceProof where `regulator = Some regulatorParty` | Nothing — read-only |
+| **Sync Domain** | Canton infrastructure | Encrypted routing metadata only | N/A |
+| **Other** | Any other participant | Nothing | Nothing |
+
+This visibility model is enforced at the Canton protocol layer — not application code.
+
+---
+
+## Policy packs
+
+| Pack | Regulatory framework | Controls | Output |
+|---|---|---|---|
+| `GENIUS_v1` | GENIUS Act (stablecoin) | Issuer type · reserve ratio · certification · redemption · prohibited activities | `payment_stablecoin` |
+| `CLARITY_v1` | CLARITY Act (market structure) | Network maturity · controller dependency · disclosure · commodity test | `digital_commodity` |
+| `SEC_CLASSIFICATION_v1` | SEC Howey Test analysis | Investment contract · promoter dependency · profit expectation · decentralisation · disclosure | `digital_security` |
+
+One failing control → `mixed_or_unclassified`. All controls are deterministic rules — not legal opinions.
+
+---
+
+## API reference
+
+Backend runs at `http://localhost:8000`. Interactive docs at `/docs`.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness check |
+| `POST` | `/evaluate` | Classify asset + anchor ComplianceProof on Canton |
+| `POST` | `/evaluate/multi` | Classify against all three policy packs |
+| `GET` | `/proof/{assetId}?issuer_party=` | Query live proof status from Canton ACS |
+| `POST` | `/verify` | Recompute proof hash and compare against on-ledger record |
+| `POST` | `/parties/allocate` | Allocate a new Canton party |
 
 ---
 
 ## Quick start
 
 ```bash
-# Build and test DAML contracts
-cd daml && dpm build && dpm test
+# 1. Build and test DAML contracts
+cd daml
+dpm build && dpm test
 
-# Start local sandbox
-cd daml && dpm sandbox
-# JSON Ledger API available at http://localhost:6864
+# 2. Start local sandbox (new terminal)
+dpm sandbox
+# → JSON Ledger API: http://localhost:6864
 
-# Start backend (new terminal)
+# 3. Configure and start backend (new terminal)
 cd backend
-cp .env.example .env   # fill in party fingerprints
+cp .env.example .env        # fill in CANTON_EVALUATOR_PARTY
 pip install -r requirements.txt
-uvicorn api:app --reload
+uvicorn api:app --reload    # → http://localhost:8000/docs
 
-# Build SDK
-cd sdk && npm install && npm run build
+# 4. Evaluate an asset
+curl -s -X POST http://localhost:8000/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "assetId": "STABLECOIN-DEMO-001",
+    "issuerParty": "Issuer::1220...",
+    "policyPack": "GENIUS_v1",
+    "assetMetadata": {
+      "issuerType": "insured_depository_institution",
+      "reserveRatio": 1.05,
+      "monthlyReserveCertification": true,
+      "redemptionSupport": true,
+      "prohibitedActivities": []
+    }
+  }'
+
+# 5. Verify proof hash
+curl -s -X POST http://localhost:8000/verify \
+  -H "Content-Type: application/json" \
+  -d '{"assetId":"STABLECOIN-DEMO-001","issuerParty":"Issuer::1220...","proofHash":"sha256:...","policyPack":"GENIUS_v1","assetMetadata":{...}}'
 ```
 
-Full setup in [docs/quickstart.md](docs/quickstart.md).
+Full setup: [docs/quickstart.md](docs/quickstart.md)
 
 ---
 
 ## Repository layout
 
 ```
-daml/           DAML contract layer — primary deliverable
-examples/       CIP-0056 gated transfer + stablecoin GENIUS Act examples
-backend/        Classification engine + Canton Ledger API adapter
-sdk/            @tokenproof/canton-sdk TypeScript package (M4)
-docs/           Architecture reference + quickstart guide
+canton_tokenproof/
+├── daml/                        ← PRIMARY DELIVERABLE — dpm build + dpm test
+│   ├── Main/
+│   │   ├── ComplianceProof.daml ← core on-ledger compliance record
+│   │   ├── ComplianceGuard.daml ← interface any CIP-0056 token implements
+│   │   ├── EvaluationRequest.daml
+│   │   └── Types.daml
+│   └── Test/
+│       ├── ComplianceProofTest.daml
+│       └── TransferGateTest.daml
+├── examples/
+│   ├── cip0056-gated-transfer/  ← TokenBond + atomic DvP demo
+│   └── stablecoin-genius-act/   ← StablecoinToken with GENIUS Act minting gate
+├── backend/
+│   ├── api.py                   ← FastAPI endpoints
+│   ├── engine.py                ← classification engine + proof hash
+│   ├── canton_adapter.py        ← Canton JSON Ledger API v2 adapter
+│   ├── policy_packs/            ← GENIUS_v1 · CLARITY_v1 · SEC_v1
+│   └── tests/
+├── sdk/                         ← @tokenproof/canton-sdk  (M4)
+└── docs/
+    ├── architecture.md
+    └── quickstart.md
 ```
 
 ---
 
-## Policy packs
+## Milestones
 
-| Pack | Regulatory framework | Output |
-|------|---------------------|--------|
-| `GENIUS_v1` | GENIUS Act — stablecoin classification | `payment_stablecoin` |
-| `CLARITY_v1` | CLARITY Act — market structure | `digital_commodity` |
-| `SEC_CLASSIFICATION_v1` | SEC digital securities analysis | `digital_security` |
+| Milestone | Deliverable | Status |
+|---|---|---|
+| M1 | DAML package — `dpm test` passing | ✅ Complete |
+| M2 | Canton Ledger API v2 backend | ✅ Complete |
+| M3 | ComplianceGuard interface + CIP-0056 examples | ✅ Complete |
+| M4 | TypeScript SDK + React dashboard | In progress |
+| M5 | Security hardening + MainNet deployment | Planned |
 
-Worst-of aggregation: one failing control → `mixed_or_unclassified`. All controls are deterministic rules — not legal opinions.
-
----
-
-## Canton Dev Fund
-
-TokenProof is being developed with support from the Canton Dev Fund. Proposal: [docs/architecture.md](docs/architecture.md).
-
-- **M1** — DAML package design + dpm test passing ✅
-- **M2** — Canton Ledger API backend ✅
-- **M3** — ComplianceGuard interface + CIP-0056 reference implementation ✅
-- **M4** — TypeScript SDK + React dashboard _(in progress)_
-- **M5** — Security hardening + MainNet deployment _(planned)_
+Proposal: [docs/architecture.md](docs/architecture.md) · Canton Dev Fund
 
 ---
 
@@ -155,8 +243,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache 2.0 — all DAML packages, backend, SDK, and dashboard.
-
----
+Apache 2.0 — DAML packages, backend, SDK, and dashboard.
 
 > **DISCLAIMER:** TokenProof runs deterministic classification controls. This is not legal advice. ComplianceGuard enforces controls; it does not encode laws.

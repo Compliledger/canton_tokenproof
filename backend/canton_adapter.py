@@ -13,6 +13,7 @@ No private key is stored in this backend.
 
 import os
 import logging
+import uuid
 from typing import Optional
 
 import httpx
@@ -31,20 +32,23 @@ _PROOF_PACKAGE_ID = os.getenv("TOKENPROOF_PACKAGE_ID", "")
 
 def _template_id(module: str, entity: str) -> str:
     """Build a fully-qualified Canton v2 template ID.
-    Falls back to short form during local sandbox development only.
-    Set TOKENPROOF_PACKAGE_ID after dpm build for any live network.
+    Reads TOKENPROOF_PACKAGE_ID at call time so a value set after
+    module import is always picked up (e.g. in tests or late env init).
+    Falls back to short form for local sandbox development only.
     """
-    if _PROOF_PACKAGE_ID:
-        return f"{_PROOF_PACKAGE_ID}:{module}:{entity}"
+    pkg = os.getenv("TOKENPROOF_PACKAGE_ID", "")
+    if pkg:
+        return f"{pkg}:{module}:{entity}"
     return f"{module}:{entity}"
 
 
-COMPLIANCE_PROOF_TEMPLATE = _template_id("Main.ComplianceProof", "ComplianceProof")
+def _compliance_proof_template() -> str:
+    return _template_id("Main.ComplianceProof", "ComplianceProof")
 
 
 def _headers() -> dict:
-    jwt = os.getenv("CANTON_EVALUATOR_JWT", EVALUATOR_JWT)
     headers = {"Content-Type": "application/json"}
+    jwt = os.getenv("CANTON_EVALUATOR_JWT", "")
     if jwt:
         headers["Authorization"] = f"Bearer {jwt}"
     return headers
@@ -71,7 +75,7 @@ def create_compliance_proof(
         "commands": [
             {
                 "CreateCommand": {
-                    "templateId": COMPLIANCE_PROOF_TEMPLATE,
+                    "templateId": _compliance_proof_template(),
                     "createArguments": {
                         "assetId":        asset_id,
                         "issuer":         issuer_party,
@@ -89,7 +93,7 @@ def create_compliance_proof(
         "actAs":        [issuer_party, EVALUATOR_PARTY],
         "readAs":       [],
         "applicationId": APP_ID,
-        "commandId":    f"create-proof-{asset_id}-{policy_version}",
+        "commandId":    f"create-proof-{asset_id}-{uuid.uuid4().hex[:12]}",
         "userId":       os.getenv("CANTON_USER_ID", "participant_admin"),
     }
 

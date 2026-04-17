@@ -3,11 +3,6 @@ Unit tests for TokenProof policy packs and classification engine.
 Run from the backend/ directory:  python -m pytest tests/ -v
 """
 
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 import pytest
 from policy_packs.GENIUS_v1 import evaluate as genius_evaluate
 from policy_packs.CLARITY_v1 import evaluate as clarity_evaluate
