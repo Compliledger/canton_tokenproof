@@ -1,0 +1,16 @@
+# Tell GitHub Linguist to recognise .daml source files as DAML language.
+# Without this the language bar shows 0 % DAML even though the .daml files
+# are tracked — because Linguist needs the hint to weight them correctly
+# relative to the larger Python / TypeScript layers.
+
+*.daml linguist-language=DAML linguist-detectable=true
+
+# Mark generated / vendor directories so Linguist ignores them and they do
+# not dilute the DAML percentage with SDK dependency sources.
+daml/.daml/**   linguist-vendored=true
+examples/**/.daml/** linguist-vendored=true
+
+# Force Linguist to include the three example packages in the DAML count
+# (they are not vendored — they are first-party reference implementations).
+examples/cip0056-gated-transfer/*.daml linguist-language=DAML linguist-detectable=true
+examples/stablecoin-genius-act/*.daml  linguist-language=DAML linguist-detectable=true
