@@ -15,8 +15,9 @@ No private key is stored in this backend.
 """
 
 import os
+import hashlib
+import json
 import logging
-import uuid
 from typing import Optional
 
 import httpx
@@ -28,11 +29,27 @@ logger = logging.getLogger(__name__)
 LEDGER_API_BASE  = os.getenv("CANTON_LEDGER_API_URL", "http://localhost:6864")
 EVALUATOR_JWT    = os.getenv("CANTON_EVALUATOR_JWT", "")
 EVALUATOR_PARTY  = os.getenv("CANTON_EVALUATOR_PARTY", "TokenProofEvaluator::placeholder")
-APP_ID           = "tokenproof-canton"
+USER_ID          = os.getenv("CANTON_USER_ID", "participant_admin")
 
-# Package hash is set after `dpm damlc inspect-dar --json .daml/dist/*.dar | jq .main_package_id`
-# Required by Canton JSON Ledger API v2: format is <packageId>:Module.Name:TemplateName
-_PROOF_PACKAGE_ID = os.getenv("TOKENPROOF_PACKAGE_ID", "")
+
+def _config_health_warnings() -> None:
+    """Log loud warnings when the backend is clearly misconfigured.
+    Called at module import. Does not raise so that unit tests can still run.
+    """
+    if "placeholder" in EVALUATOR_PARTY or "::" not in EVALUATOR_PARTY:
+        logger.warning(
+            "CANTON_EVALUATOR_PARTY is not a fully-qualified party ID (%s). "
+            "All ledger calls will fail until this is set correctly.",
+            EVALUATOR_PARTY,
+        )
+    if not os.getenv("TOKENPROOF_PACKAGE_ID"):
+        logger.warning(
+            "TOKENPROOF_PACKAGE_ID is not set. Template IDs will be sent in short form "
+            "which is rejected by production Canton participants. Set it before anchoring proofs."
+        )
+
+
+_config_health_warnings()
 
 
 def _template_id(module: str, entity: str) -> str:
@@ -59,6 +76,55 @@ def _headers() -> dict:
     return headers
 
 
+def _parse_acs_response(body: str) -> list:
+    """Parse a Canton v2 active-contracts response body into a list of entries.
+
+    Accepts:
+      - JSON array:         [ {...}, {...} ]
+      - NDJSON:             {...}\n{...}\n
+      - Envelope with result: { "result": [ ... ] }
+      - Empty body
+    Returns an empty list on malformed input so callers degrade to 'not found'.
+    """
+    body = (body or "").strip()
+    if not body:
+        return []
+    # Try the simple JSON case first.
+    try:
+        doc = json.loads(body)
+    except json.JSONDecodeError:
+        # NDJSON fallback.
+        out = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed ACS line: %s", line[:120])
+        return out
+    if isinstance(doc, list):
+        return doc
+    if isinstance(doc, dict):
+        # Some Canton builds wrap the result in { "result": [...] } or similar.
+        for key in ("result", "activeContracts", "contractEntries"):
+            val = doc.get(key)
+            if isinstance(val, list):
+                return val
+    return []
+
+
+def _deterministic_command_id(asset_id: str, issuer_party: str, policy_version: str, proof_hash: str) -> str:
+    """Deterministic commandId so Canton command deduplication prevents double-anchoring.
+    Same (asset, issuer, policy, proof hash) => same command => single on-ledger contract.
+    """
+    digest = hashlib.sha256(
+        "|".join([asset_id, issuer_party, policy_version, proof_hash]).encode()
+    ).hexdigest()[:32]
+    return f"tokenproof-create-{digest}"
+
+
 def create_compliance_proof(
     asset_id: str,
     issuer_party: str,
@@ -70,8 +136,14 @@ def create_compliance_proof(
 ) -> dict:
     """
     Submit a ComplianceProof creation command to the Canton node.
-    Uses POST /v2/commands/submit-and-wait (JSON Ledger API).
-    Returns the contract ID on success.
+    Uses POST /v2/commands/submit-and-wait (JSON Ledger API v2).
+
+    Idempotency: commandId is derived deterministically from the inputs so that a
+    retry of the same request is deduplicated by the Canton command dedup window
+    rather than creating a second ComplianceProof contract.
+
+    Authorization: v2 uses userId only. The deprecated applicationId field is not
+    sent. Ensure the Canton user has actAs rights for both issuer and evaluator.
     """
     # Canton JSON Ledger API v2: Optional uses null for None, bare value for Some.
     regulator_field = regulator_party if regulator_party else None
@@ -95,11 +167,10 @@ def create_compliance_proof(
                 }
             }
         ],
-        "actAs":        [issuer_party, EVALUATOR_PARTY],
-        "readAs":       [],
-        "applicationId": APP_ID,
-        "commandId":    f"create-proof-{asset_id}-{uuid.uuid4().hex[:12]}",
-        "userId":       os.getenv("CANTON_USER_ID", "participant_admin"),
+        "actAs":     [issuer_party, EVALUATOR_PARTY],
+        "readAs":    [],
+        "commandId": _deterministic_command_id(asset_id, issuer_party, policy_version, proof_hash),
+        "userId":    USER_ID,
     }
 
     url = f"{LEDGER_API_BASE}/v2/commands/submit-and-wait"
@@ -152,29 +223,40 @@ def get_proof_by_asset(asset_id: str, issuer_party: str) -> Optional[dict]:
 
     url = f"{LEDGER_API_BASE}/v2/state/active-contracts"
 
-    # v2 returns a JSON array (not NDJSON) of objects with contractEntry.JsActiveContract.
+    # v2 JSON body: some Canton releases return a JSON array, others return NDJSON.
+    # Handle both so the backend works against any 3.4.x participant node.
     try:
         r = httpx.post(url, json=payload, headers=_headers(), timeout=30)
         if r.status_code != 200:
             logger.error("ACS query failed: status=%d body=%s", r.status_code, r.text[:200])
             return None
-        entries = r.json()
+        entries = _parse_acs_response(r.text)
     except Exception as exc:
         logger.error("ACS request failed: %s", exc)
         return None
 
     for entry in entries:
+        # Canton 3.4.x JSON shapes: entry.contractEntry.JsActiveContract.createdEvent
+        # Some releases flatten to entry.createdEvent. Accept both.
         created = (
             entry.get("contractEntry", {})
                  .get("JsActiveContract", {})
-                 .get("createdEvent", {})
+                 .get("createdEvent")
+            or entry.get("createdEvent")
+            or {}
         )
         tid = created.get("templateId", "")
         if "ComplianceProof" not in tid:
             continue
-        args = created.get("createArgument", {})
-        # Match by assetId AND issuer to return the correct proof when multiple exist.
+        # Field name differs across 3.4 minor releases: createArgument vs createArguments.
+        args = created.get("createArgument") or created.get("createArguments") or {}
         if args.get("assetId") == asset_id and args.get("issuer") == issuer_party:
+            # Disclosure blob field also varies: createdEventBlob vs eventBlob.
+            blob = (
+                created.get("createdEventBlob")
+                or created.get("eventBlob")
+                or ""
+            )
             return {
                 "contractId":       created.get("contractId", ""),
                 "assetId":          args.get("assetId"),
@@ -185,7 +267,7 @@ def get_proof_by_asset(asset_id: str, issuer_party: str) -> Optional[dict]:
                 "proofHash":        args.get("proofHash"),
                 "timestamp":        args.get("timestamp"),
                 # Included for disclosedContracts bundle — needed for multi-node Transfer
-                "createdEventBlob": created.get("createdEventBlob", ""),
+                "createdEventBlob": blob,
                 "templateId":       created.get("templateId", ""),
             }
 

@@ -73,6 +73,11 @@ template ComplianceProof
       do
         assertMsg "Cannot re-evaluate a Revoked proof; deploy a new ComplianceProof with a new assetId"
           (decisionStatus /= Revoked)
+        -- Monotonic timestamp invariant: a re-evaluation must be strictly later
+        -- than the prior proof timestamp. Prevents backdated evaluations which
+        -- would otherwise be reproducible on the off-ledger hash check.
+        assertMsg "ReEvaluate timestamp must be strictly later than the current proof timestamp"
+          (newTimestamp > timestamp)
         create this with
           classification = newClassification
           policyVersion  = newPolicyVersion

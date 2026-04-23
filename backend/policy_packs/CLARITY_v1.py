@@ -38,7 +38,15 @@ def _check_disclosure_requirements(metadata: dict) -> dict:
 
 
 def _check_commodity_vs_security(metadata: dict) -> dict:
-    indicator = metadata.get("investmentContractIndicator", True)
+    # Default to None so missing metadata yields 'unknown' rather than a silent
+    # default-to-security bias. Only an explicit False passes this control.
+    indicator = metadata.get("investmentContractIndicator")
+    if indicator is None:
+        return {
+            "control": "commodity_not_security_indicator",
+            "passed": False,
+            "reason": "investmentContractIndicator is missing — cannot classify as commodity without explicit determination",
+        }
     passed = not bool(indicator)
     return {
         "control": "commodity_not_security_indicator",
