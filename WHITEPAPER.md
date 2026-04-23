@@ -343,7 +343,7 @@ certification lapsed) or Revoked.
 | `POST` | `/v2/commands/submit-and-wait` | 7575 | Create ComplianceProof contract |
 | `GET` | `/v2/state/ledger-end` | 7575 | Fetch current offset for ACS query |
 | `POST` | `/v2/state/active-contracts` | 7575 | Query active ComplianceProof by evaluator |
-| `POST` | `/v2/parties/allocate` | 7575 | Onboard issuer / regulator parties |
+| `POST` | `/v2/parties` | 6864 | Onboard issuer / regulator parties |
 
 ---
 

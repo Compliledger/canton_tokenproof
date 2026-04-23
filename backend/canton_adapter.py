@@ -8,7 +8,7 @@ Uses Canton's JSON Ledger API v2 for:
   (override via CANTON_LEDGER_API_URL environment variable)
   - ComplianceProof contract creation  (POST /v2/commands/submit-and-wait)
   - Active Contract Service queries    (POST /v2/state/active-contracts)
-  - Party allocation                   (POST /v2/parties/allocate)
+  - Party allocation                   (POST /v2/parties)
 
 JWT party authentication replaces ALGO_SENDER_MNEMONIC.
 No private key is stored in this backend.
@@ -319,15 +319,18 @@ def get_proof_disclosure_bundle(asset_id: str, issuer_party: str) -> Optional[di
 def allocate_party(display_name: str, party_id_hint: str) -> dict:
     """
     Allocate a new party on the Canton participant node.
-    Uses POST /v2/parties/allocate — NOT the deprecated daml ledger allocate-parties.
+    Uses POST /v2/parties (Canton 3.4 JSON Ledger API v2).
+    Not the deprecated daml-assistant 'daml ledger allocate-parties' CLI.
+
+    Verified against Canton 3.4.11 sandbox: /v2/parties/allocate returns 405,
+    the canonical endpoint is /v2/parties with POST.
     """
     payload = {
         "partyIdHint":        party_id_hint,
-        "displayName":        display_name,
         "identityProviderId": "",
     }
 
-    url = f"{LEDGER_API_BASE}/v2/parties/allocate"
+    url = f"{LEDGER_API_BASE}/v2/parties"
     response = httpx.post(url, json=payload, headers=_headers(), timeout=30)
 
     if response.status_code == 200:

@@ -143,9 +143,9 @@ jobs:
 
       - name: Allocate evaluator party and start backend
         run: |
-          EVALUATOR=$(curl -sf -X POST http://localhost:6864/v2/parties/allocate \
+          EVALUATOR=$(curl -sf -X POST http://localhost:6864/v2/parties \
             -H "Content-Type: application/json" \
-            -d '{"partyIdHint":"TokenProofEvaluator","displayName":"TokenProofEvaluator","identityProviderId":""}' \
+            -d '{"partyIdHint":"TokenProofEvaluator","identityProviderId":""}' \
             | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('partyDetails') or d.get('result', {}).get('partyDetails') or {}).get('party', ''))")
           test -n "$EVALUATOR"
           echo "CANTON_EVALUATOR_PARTY=$EVALUATOR" >> $GITHUB_ENV

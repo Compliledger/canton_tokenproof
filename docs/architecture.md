@@ -96,7 +96,7 @@ gRPC Ledger API: `localhost:6865` (bare sandbox) / `localhost:6866` (LocalNet).
 |-----------|----------|
 | Create ComplianceProof | `POST /v2/commands/submit-and-wait` |
 | Query proof by asset | `POST /v2/state/active-contracts` |
-| Allocate party | `POST /v2/parties/allocate` |
+| Allocate party | `POST /v2/parties` |
 | Get ledger end offset | `GET /v2/ledger-end` |
 | Stream proof events | gRPC Ledger API port 6865 |
 
