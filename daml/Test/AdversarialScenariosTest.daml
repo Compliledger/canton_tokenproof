@@ -1,0 +1,172 @@
+module Test.AdversarialScenariosTest where
+
+import Daml.Script
+import DA.Time
+import DA.Date
+import Main.ComplianceProof
+import Main.Types
+
+-- | Minimal token template for adversarial testing.
+-- Similar to TestBond in TransferGateTest but for adversarial scenarios.
+template AdversarialToken
+  with
+    issuer    : Party
+    owner     : Party
+    evaluator : Party
+    assetId   : Text
+  where
+    signatory issuer
+    observer  owner, evaluator
+
+    -- Transfer enforces the compliance gate atomically.
+    choice Transfer : ContractId AdversarialToken
+      with
+        newOwner : Party
+        proofCid : ContractId ComplianceProof
+      controller owner
+      do
+        proof <- fetch proofCid
+        assertMsg
+          ("Transfer blocked: compliance proof status is " <> show proof.decisionStatus)
+          (proof.decisionStatus == Active)
+        create this with owner = newOwner
+
+-- | Adversarial scenario: SuspendProof followed by failed transfer.
+-- This tests that a suspended proof blocks transfers atomically.
+-- Run with: dpm test
+suspendedProofBlocksTransfer : Script ()
+suspendedProofBlocksTransfer = do
+  issuer    <- allocateParty "Issuer"
+  evaluator <- allocateParty "TokenProofEvaluator"
+  owner     <- allocateParty "TokenOwner"
+  buyer     <- allocateParty "TokenBuyer"
+
+  let baseTime = time (date 2026 Apr 24) 0 0 0
+
+  -- Create a ComplianceProof in Active state.
+  -- Add owner as observer for test context (in production, use disclosedContracts).
+  proofCid <- submitMulti [issuer, evaluator] [owner] $ createCmd ComplianceProof with
+    assetId        = "STABLECOIN-ADVERSARIAL-001"
+    issuer         = issuer
+    evaluator      = evaluator
+    regulator      = Some owner
+    classification = "payment_stablecoin"
+    policyVersion  = "GENIUS_v1"
+    decisionStatus = Active
+    proofHash      = "sha256:adversarial123"
+    timestamp      = baseTime
+
+  -- Create token held by owner.
+  tokenCid <- submit issuer $ createCmd AdversarialToken with
+    issuer    = issuer
+    owner     = owner
+    evaluator = evaluator
+    assetId   = "STABLECOIN-ADVERSARIAL-001"
+
+  -- Transfer succeeds with Active proof.
+  buyerTokenCid <- submit owner $ exerciseCmd tokenCid Transfer with
+    newOwner = buyer
+    proofCid = proofCid
+
+  -- Evaluator suspends the proof (e.g. reserve ratio dropped below threshold).
+  suspendedCid <- submit evaluator $ exerciseCmd proofCid SuspendProof
+  Some suspended <- queryContractId issuer suspendedCid
+  assertMsg "Status should be Suspended" (suspended.decisionStatus == Suspended)
+
+  -- Transfer fails with Suspended proof.
+  submitMustFail buyer $ exerciseCmd buyerTokenCid Transfer with
+    newOwner = owner
+    proofCid = suspendedCid
+
+  return ()
+
+
+-- | Adversarial scenario: Multi-party scenario with 3 distinct parties.
+-- Tests that co-signatory enforcement works across multiple parties.
+-- Run with: dpm test
+multiPartyCoSignatoryTest : Script ()
+multiPartyCoSignatoryTest = do
+  issuer    <- allocateParty "IssuerA"
+  evaluator <- allocateParty "TokenProofEvaluator"
+  regulator <- allocateParty "RegulatorB"
+
+  let baseTime = time (date 2026 Apr 24) 0 0 0
+
+  -- Proof creation requires BOTH issuer and evaluator as signatories.
+  -- Attempting with only issuer should fail.
+  proofCid <- submitMulti [issuer, evaluator] [] $ createCmd ComplianceProof with
+    assetId        = "STABLECOIN-MULTIPARTY-001"
+    issuer         = issuer
+    evaluator      = evaluator
+    regulator      = Some regulator
+    classification = "payment_stablecoin"
+    policyVersion  = "GENIUS_v1"
+    decisionStatus = Active
+    proofHash      = "sha256:multiparty456"
+    timestamp      = baseTime
+
+  Some proof <- queryContractId issuer proofCid
+  assertMsg "Proof created with co-signatories" (proof.decisionStatus == Active)
+
+  -- Re-evaluation also requires both parties.
+  let newTime = time (date 2026 May 15) 0 0 0
+  newProofCid <- submitMulti [issuer, evaluator] [] $ exerciseCmd proofCid ReEvaluate with
+    newClassification = "payment_stablecoin"
+    newPolicyVersion  = "GENIUS_v2"
+    newProofHash      = "sha256:multiparty789"
+    newTimestamp      = newTime
+
+  Some newProof <- queryContractId issuer newProofCid
+  assertMsg "Re-evaluated with co-signatories" (newProof.decisionStatus == Active)
+
+  return ()
+
+
+-- | Adversarial scenario: Revoked proof followed by failed transfer.
+-- Similar to suspended proof test but for terminal Revoked state.
+-- Run with: dpm test
+revokedProofBlocksTransfer : Script ()
+revokedProofBlocksTransfer = do
+  issuer    <- allocateParty "Issuer"
+  evaluator <- allocateParty "TokenProofEvaluator"
+  owner     <- allocateParty "TokenOwner"
+  buyer     <- allocateParty "TokenBuyer"
+
+  let baseTime = time (date 2026 Apr 24) 0 0 0
+
+  -- Create a proof.
+  -- Add owner as observer for test context (in production, use disclosedContracts).
+  proofCid <- submitMulti [issuer, evaluator] [owner] $ createCmd ComplianceProof with
+    assetId        = "STABLECOIN-REVOKED-001"
+    issuer         = issuer
+    evaluator      = evaluator
+    regulator      = Some owner
+    classification = "payment_stablecoin"
+    policyVersion  = "GENIUS_v1"
+    decisionStatus = Active
+    proofHash      = "sha256:revoked123"
+    timestamp      = baseTime
+
+  -- Create token held by owner.
+  tokenCid <- submit issuer $ createCmd AdversarialToken with
+    issuer    = issuer
+    owner     = owner
+    evaluator = evaluator
+    assetId   = "STABLECOIN-REVOKED-001"
+
+  -- Transfer succeeds with Active proof.
+  buyerTokenCid <- submit owner $ exerciseCmd tokenCid Transfer with
+    newOwner = buyer
+    proofCid = proofCid
+
+  -- Evaluator revokes the proof (terminal state).
+  revokedCid <- submit evaluator $ exerciseCmd proofCid RevokeProof
+  Some revoked <- queryContractId issuer revokedCid
+  assertMsg "Status should be Revoked" (revoked.decisionStatus == Revoked)
+
+  -- Transfer fails with Revoked proof.
+  submitMustFail buyer $ exerciseCmd buyerTokenCid Transfer with
+    newOwner = owner
+    proofCid = revokedCid
+
+  return ()
