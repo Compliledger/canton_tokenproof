@@ -2,7 +2,10 @@
 canton_adapter.py — Canton Ledger API adapter.
 Replaces algorand_adapter.py entirely. No Algorand code remains here.
 
-Uses Canton's JSON Ledger API v2 (port 6864) for:
+Uses Canton's JSON Ledger API v2 for:
+  bare dpm sandbox:    http://localhost:6864
+  CN Quickstart LocalNet: http://localhost:7575
+  (override via CANTON_LEDGER_API_URL environment variable)
   - ComplianceProof contract creation  (POST /v2/commands/submit-and-wait)
   - Active Contract Service queries    (POST /v2/state/active-contracts)
   - Party allocation                   (POST /v2/parties/allocate)
@@ -20,6 +23,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Default port matches bare 'dpm sandbox' (SDK 3.4.11 default: 6864).
+# CN Quickstart LocalNet uses 7575. Always override via CANTON_LEDGER_API_URL.
 LEDGER_API_BASE  = os.getenv("CANTON_LEDGER_API_URL", "http://localhost:6864")
 EVALUATOR_JWT    = os.getenv("CANTON_EVALUATOR_JWT", "")
 EVALUATOR_PARTY  = os.getenv("CANTON_EVALUATOR_PARTY", "TokenProofEvaluator::placeholder")
@@ -104,7 +109,11 @@ def create_compliance_proof(
         data = response.json()
         update_id = data.get("updateId", "")
         logger.info("ComplianceProof created: assetId=%s updateId=%s", asset_id, update_id)
-        return {"success": True, "updateId": update_id, "contractId": "", "raw": data}
+        # submit-and-wait returns only updateId in v2; retrieve the contractId from ACS.
+        # The transaction is committed at this point so the ACS query is consistent.
+        newly_created = get_proof_by_asset(asset_id, issuer_party)
+        contract_id = newly_created.get("contractId", "") if newly_created else ""
+        return {"success": True, "updateId": update_id, "contractId": contract_id, "raw": data}
 
     logger.error(
         "Failed to create ComplianceProof: status=%d body=%s",
@@ -127,10 +136,13 @@ def get_proof_by_asset(asset_id: str, issuer_party: str) -> Optional[dict]:
         logger.error("Failed to fetch ledger-end: %s", exc)
         return None
 
+    # Query as the evaluator — co-signatory of all ComplianceProof contracts.
+    # The evaluator JWT is used for auth; evaluator can see every proof it co-signed.
+    # Filter results by assetId and issuer_party to return the correct contract.
     payload = {
         "filter": {
             "filtersByParty": {
-                issuer_party: {}
+                EVALUATOR_PARTY: {}
             }
         },
         "verbose":         True,
@@ -161,18 +173,65 @@ def get_proof_by_asset(asset_id: str, issuer_party: str) -> Optional[dict]:
         if "ComplianceProof" not in tid:
             continue
         args = created.get("createArgument", {})
-        if args.get("assetId") == asset_id:
+        # Match by assetId AND issuer to return the correct proof when multiple exist.
+        if args.get("assetId") == asset_id and args.get("issuer") == issuer_party:
             return {
-                "contractId":     created.get("contractId", ""),
-                "assetId":        args.get("assetId"),
-                "classification": args.get("classification"),
-                "policyVersion":  args.get("policyVersion"),
-                "decisionStatus": args.get("decisionStatus", "Unknown"),
-                "proofHash":      args.get("proofHash"),
-                "timestamp":      args.get("timestamp"),
+                "contractId":       created.get("contractId", ""),
+                "assetId":          args.get("assetId"),
+                "issuer":           args.get("issuer"),
+                "classification":   args.get("classification"),
+                "policyVersion":    args.get("policyVersion"),
+                "decisionStatus":   args.get("decisionStatus", "Unknown"),
+                "proofHash":        args.get("proofHash"),
+                "timestamp":        args.get("timestamp"),
+                # Included for disclosedContracts bundle — needed for multi-node Transfer
+                "createdEventBlob": created.get("createdEventBlob", ""),
+                "templateId":       created.get("templateId", ""),
             }
 
     return None
+
+
+def get_proof_disclosure_bundle(asset_id: str, issuer_party: str) -> Optional[dict]:
+    """
+    Returns the disclosedContracts entry for a ComplianceProof contract.
+
+    Canton's privacy model means a token owner's participant node may not hold the
+    ComplianceProof contract (they are not a signatory or observer). When that owner
+    submits a Transfer choice that calls fetch(proofCid), their node cannot resolve
+    the contract unless it is provided as a disclosed contract in the API call.
+
+    This function returns the bundle the transfer submitter must include under
+    'disclosedContracts' in their POST /v2/commands/submit-and-wait payload:
+
+        {
+          "contractId": "<proof contract id>",
+          "templateId": "<package>:Main.ComplianceProof:ComplianceProof",
+          "createdEventBlob": "<base64 blob from ACS>"
+        }
+
+    The evaluator node has full visibility to the proof (co-signatory), so this
+    backend can serve the bundle to any authorised caller.
+    """
+    proof = get_proof_by_asset(asset_id, issuer_party)
+    if not proof:
+        return None
+
+    blob = proof.get("createdEventBlob", "")
+    template_id = proof.get("templateId") or _compliance_proof_template()
+    contract_id = proof.get("contractId", "")
+
+    if not contract_id:
+        logger.warning(
+            "get_proof_disclosure_bundle: contractId empty for assetId=%s", asset_id
+        )
+        return None
+
+    return {
+        "contractId":       contract_id,
+        "templateId":       template_id,
+        "createdEventBlob": blob,
+    }
 
 
 def allocate_party(display_name: str, party_id_hint: str) -> dict:

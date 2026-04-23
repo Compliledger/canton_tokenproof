@@ -38,7 +38,17 @@ cd daml
 dpm sandbox
 ```
 
-The local Canton sandbox starts with JSON Ledger API on **port 6864** (HTTP) and gRPC on port 6865.
+Bare `dpm sandbox` (SDK 3.4.11) starts the JSON Ledger API on **port 6864** (HTTP) and gRPC on port 6865.
+CN Quickstart LocalNet uses port **7575** (HTTP) and port 6866 (gRPC).
+
+Verify the sandbox is ready:
+
+```bash
+# bare dpm sandbox:
+curl http://localhost:6864/v2/state/ledger-end
+# CN Quickstart LocalNet:
+curl http://localhost:7575/livez
+```
 
 ---
 
@@ -52,7 +62,8 @@ pip install -r requirements.txt
 cp .env.example .env
 
 # Or export directly:
-export CANTON_LEDGER_API_URL=http://localhost:6864
+export CANTON_LEDGER_API_URL=http://localhost:6864    # bare dpm sandbox
+# export CANTON_LEDGER_API_URL=http://localhost:7575  # CN Quickstart LocalNet
 export CANTON_EVALUATOR_JWT=
 export CANTON_EVALUATOR_PARTY=<TokenProofEvaluator::fingerprint>
 export TOKENPROOF_PACKAGE_ID=<package-id-from-dpm-build-output>
@@ -145,10 +156,68 @@ This runs two scripts: `atomicDvPDemo` and `dvpWorkflowDemo`. Both must exit wit
 
 | Stage | Command | Notes |
 |-------|---------|-------|
-| Local | `dpm sandbox` | Port 6864, resets on restart |
-| DevNet | `dpm deploy --network devnet` | Shared Canton DevNet |
-| TestNet | `dpm deploy --network testnet` | Stable, xReserve bridge available |
+| Local | `dpm sandbox` | Port 7575 (JSON API), resets on restart |
+| DevNet | Upload DAR via gRPC, allocate parties | Shared Canton DevNet |
+| TestNet | Validator node, JWT RS256 auth | Stable, xReserve bridge available |
 | MainNet | Kubernetes validator or NaaS | Canton Global Synchronizer |
+
+---
+
+## 8. Multi-Node Token Transfers (Production)
+
+In a real Canton deployment parties live on **separate participant nodes**. The
+token owner's node does not hold the `ComplianceProof` contract (they are not a
+signatory or observer). The owner must include the proof as a `disclosedContracts`
+entry when submitting the `Transfer` choice.
+
+### Step 1 — Get the disclosure bundle
+
+```bash
+curl "http://localhost:8000/proof/STABLECOIN-DEMO-001/disclosure?issuer_party=Issuer::fingerprint"
+```
+
+Response:
+```json
+{
+  "contractId": "00abc123...",
+  "templateId": "<packageId>:Main.ComplianceProof:ComplianceProof",
+  "createdEventBlob": "<base64>"
+}
+```
+
+### Step 2 — Include it in the Transfer command
+
+```bash
+curl -X POST http://localhost:7575/v2/commands/submit-and-wait \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $OWNER_JWT" \
+  -d '{
+    "commands": [{
+      "ExerciseCommand": {
+        "templateId": "<packageId>:TokenBond:TokenBond",
+        "contractId": "<bond-contract-id>",
+        "choice": "Transfer",
+        "choiceArgument": {
+          "newOwner": "<buyer-party>",
+          "proofCid": "<contractId-from-step-1>"
+        }
+      }
+    }],
+    "actAs": ["<owner-party>"],
+    "disclosedContracts": [
+      {
+        "contractId": "<contractId-from-step-1>",
+        "templateId": "<templateId-from-step-1>",
+        "createdEventBlob": "<createdEventBlob-from-step-1>"
+      }
+    ]
+  }'
+```
+
+The Canton transaction interpreter resolves `proofCid` from the disclosed
+contracts payload rather than from the owner's local ACS. The compliance gate
+fires atomically inside the same two-phase commit transaction regardless of
+which participant node the owner is hosted on.
 
 ---
 

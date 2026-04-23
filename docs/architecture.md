@@ -8,7 +8,7 @@ TokenProof is composed of four layers. Each layer is independently replaceable a
 |-------|-----------|----------|
 | DAML Contract Layer | DAML SDK 3.4.11 · dpm build | On-ledger proof contracts, party-scoped privacy |
 | Classification Engine | Python 3.11 · FastAPI | Deterministic policy evaluation, 3 packs |
-| Canton Ledger API Adapter | JSON Ledger API v2 port 6864 | Command submission, ACS queries, party allocation |
+| Canton Ledger API Adapter | JSON Ledger API v2 (port 6864 bare sandbox / 7575 LocalNet) | Command submission, ACS queries, party allocation |
 | Developer Surface | TypeScript · React | SDK, dashboard, CIP-0103 integration |
 
 ```mermaid
@@ -88,7 +88,9 @@ stateDiagram-v2
 
 ## JSON Ledger API Endpoints Used
 
-Sandbox runs on `http://localhost:6864` (HTTP JSON API v2) and `localhost:6865` (gRPC).
+Sandbox runs on `http://localhost:6864` (HTTP JSON API v2) with bare `dpm sandbox`, or
+`http://localhost:7575` with CN Quickstart LocalNet. Set `CANTON_LEDGER_API_URL` accordingly.
+gRPC Ledger API: `localhost:6865` (bare sandbox) / `localhost:6866` (LocalNet).
 
 | Operation | Endpoint |
 |-----------|----------|

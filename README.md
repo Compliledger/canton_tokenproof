@@ -70,7 +70,7 @@ graph TD
 
     subgraph BE["Backend  ·  Python / FastAPI"]
         ENG["Classification Engine\nGENIUS_v1 · CLARITY_v1 · SEC_v1\nworst-of aggregation · SHA-256 hash"]
-        ADP["Canton Adapter\nJSON Ledger API v2  port 6864\nsubmit-and-wait · ACS · parties"]
+        ADP["Canton Adapter\nJSON Ledger API v2  port 7575 (LocalNet) / 6864 (dpm sandbox)\nsubmit-and-wait · ACS · parties"]
     end
 
     subgraph SDK["Developer Surface  ·  TypeScript"]
@@ -157,7 +157,9 @@ dpm build && dpm test
 
 # 2. Start local sandbox (new terminal)
 dpm sandbox
-# → JSON Ledger API: http://localhost:6864
+# → JSON Ledger API: http://localhost:6864  (bare dpm sandbox default)
+# → or http://localhost:7575  (CN Quickstart LocalNet)
+# Set CANTON_LEDGER_API_URL to match your setup
 
 # 3. Configure and start backend (new terminal)
 cd backend

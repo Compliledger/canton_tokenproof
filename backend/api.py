@@ -2,12 +2,13 @@
 TokenProof FastAPI backend.
 Exposes REST endpoints consumed by the TypeScript SDK and React dashboard.
 
-POST /evaluate            — classify asset metadata + anchor proof on Canton
-POST /evaluate/multi      — classify against all three policy packs at once
-GET  /proof/{assetId}     — query live proof status from Active Contract Service
-POST /verify              — recompute proof hash and compare against on-ledger record
-POST /parties/allocate    — allocate a new Canton party (issuer / regulator onboarding)
-GET  /health              — liveness check
+POST /evaluate                    — classify asset metadata + anchor proof on Canton
+POST /evaluate/multi              — classify against all three policy packs at once
+GET  /proof/{assetId}             — query live proof status from Active Contract Service
+GET  /proof/{assetId}/disclosure  — return disclosedContracts bundle for multi-node Transfer
+POST /verify                      — recompute proof hash and compare against on-ledger record
+POST /parties/allocate            — allocate a new Canton party (issuer / regulator onboarding)
+GET  /health                      — liveness check
 
 DISCLAIMER: Deterministic classification controls only.
 Not legal advice. ComplianceGuard enforces controls; it does not encode laws.
@@ -124,6 +125,19 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class ProofDisclosureResponse(BaseModel):
+    contractId:       str
+    templateId:       str
+    createdEventBlob: str = Field(
+        "",
+        description=(
+            "Base64-encoded Canton createdEventBlob. Include as disclosedContracts "
+            "in POST /v2/commands/submit-and-wait when submitting a Transfer choice "
+            "from a node that is not a ComplianceProof stakeholder."
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -231,6 +245,41 @@ def verify_proof(req: VerifyRequest):
             "Hash mismatch — metadata or policy version may have drifted from the original evaluation."
         ),
     }
+
+
+@app.get("/proof/{asset_id}/disclosure", response_model=ProofDisclosureResponse, tags=["compliance"])
+def get_proof_disclosure(asset_id: str, issuer_party: str):
+    """
+    Return the disclosedContracts bundle for a ComplianceProof contract.
+
+    Canton's privacy model means that a token owner on a different participant node
+    may not hold the ComplianceProof contract (they are not a signatory or observer).
+    When that owner submits a Transfer choice that calls fetch(proofCid) inside the
+    same Canton transaction, their node cannot resolve the contract ID unless the
+    contract data is included as a disclosedContracts entry in the API call.
+
+    Usage — include the response in your Transfer submission:
+
+        POST /v2/commands/submit-and-wait
+        {
+          "commands": [{"ExerciseCommand": { ... Transfer choice ... }}],
+          "actAs": ["<owner-party>"],
+          "disclosedContracts": [
+            {
+              "contractId": "<from this endpoint>",
+              "templateId": "<from this endpoint>",
+              "createdEventBlob": "<from this endpoint>"
+            }
+          ]
+        }
+    """
+    bundle = canton_adapter.get_proof_disclosure_bundle(asset_id, issuer_party)
+    if bundle is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active ComplianceProof found for assetId={asset_id} issuer={issuer_party}",
+        )
+    return bundle
 
 
 @app.post("/parties/allocate", response_model=AllocatePartyResponse, tags=["admin"])

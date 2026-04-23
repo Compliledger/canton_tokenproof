@@ -61,6 +61,6 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Technical notes
 
 - Canton SDK version: 3.4.11.
-- JSON Ledger API: v2 (port 6864 HTTP, port 6865 gRPC).
+- JSON Ledger API: v2 (port 6864 HTTP / 6865 gRPC with bare `dpm sandbox`; port 7575 HTTP / 6866 gRPC with CN Quickstart LocalNet). Set `CANTON_LEDGER_API_URL` to match your setup.
 - Global contract keys removed in Daml-LF 2.x; `ComplianceProof` uses explicit `ContractId` passing.
 - Sandbox runs in no-auth mode (`wildcard`) for local development.

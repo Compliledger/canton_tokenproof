@@ -28,6 +28,17 @@ template TokenBond
     -- Caller passes proofCid explicitly (Canton 3.4: no global contract keys).
     -- fetch on an archived proof (e.g. after RevokeProof) fails atomically.
     -- assert Active — if Revoked or Suspended, the entire Canton tx fails.
+    --
+    -- MULTI-NODE REQUIREMENT: the token owner's participant node may not hold
+    -- the ComplianceProof contract (owner is not a stakeholder). The party
+    -- submitting this choice MUST include the proof as a disclosedContracts
+    -- entry in the POST /v2/commands/submit-and-wait call. Obtain the bundle
+    -- from the TokenProof backend:
+    --   GET /proof/{assetId}/disclosure?issuer_party=<issuerParty>
+    -- and pass the returned {contractId, templateId, createdEventBlob} object
+    -- under the 'disclosedContracts' field of the Ledger API request.
+    -- Daml Script tests run on a single sandbox node where all parties share
+    -- the same ACS, so this requirement does not surface in dpm test output.
     choice Transfer : ContractId TokenBond
       with
         newOwner : Party

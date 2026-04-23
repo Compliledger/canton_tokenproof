@@ -59,7 +59,7 @@ jobs:
         working-directory: backend
 
       - name: Run backend unit tests
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -v -k "not test_integration"
         working-directory: backend
 
   sdk-build:
@@ -82,3 +82,72 @@ jobs:
       - name: Build SDK
         run: npm run build
         working-directory: sdk
+
+  integration-test:
+    name: Integration Tests (Canton Sandbox)
+    runs-on: ubuntu-latest
+    needs: [daml-build-test, backend-lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache DPM
+        uses: actions/cache@v4
+        with:
+          path: ~/.dpm
+          key: dpm-${{ runner.os }}-3.4.0
+
+      - name: Install DPM (Canton SDK 3.4)
+        run: |
+          curl -sSL https://get.digitalasset.com/install/install.sh | sh
+          echo "$HOME/.dpm/bin" >> $GITHUB_PATH
+
+      - name: Build DAML packages
+        run: dpm build --all
+
+      - name: Start Canton sandbox (background)
+        run: dpm sandbox &
+        working-directory: daml
+
+      - name: Wait for sandbox to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:6864/v2/state/ledger-end > /dev/null 2>&1; then
+              echo "Sandbox ready after ${i}s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Sandbox did not become ready in 60s" && exit 1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt httpx
+        working-directory: backend
+
+      - name: Allocate evaluator party and start backend
+        run: |
+          EVALUATOR=$(curl -sf -X POST http://localhost:6864/v2/parties/allocate \
+            -H "Content-Type: application/json" \
+            -d '{"partyIdHint":"TokenProofEvaluator","identityProviderId":""}' \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['partyDetails']['party'])")
+          echo "CANTON_EVALUATOR_PARTY=$EVALUATOR" >> $GITHUB_ENV
+          echo "CANTON_LEDGER_API_URL=http://localhost:6864" >> $GITHUB_ENV
+
+      - name: Start TokenProof backend (background)
+        run: |
+          CANTON_LEDGER_API_URL=http://localhost:6864 \
+          CANTON_EVALUATOR_PARTY=$CANTON_EVALUATOR_PARTY \
+          uvicorn api:app --port 8000 &
+          sleep 3
+        working-directory: backend
+
+      - name: Run integration tests
+        run: python -m pytest tests/test_integration.py -v
+        working-directory: backend
+        env:
+          CANTON_LEDGER_API_URL: http://localhost:6864
+          TOKENPROOF_BACKEND_URL: http://localhost:8000

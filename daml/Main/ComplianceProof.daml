@@ -8,9 +8,21 @@ import Main.Types
 -- read-only access with no ability to exercise choices.
 --
 -- Canton 3.4 / Daml-LF 2.x: global contract keys are not supported.
--- Callers hold ContractId ComplianceProof explicitly and pass it to
--- Transfer / Mint choices. fetch() on an archived contract fails —
--- this preserves atomicity without needing fetchByKey.
+-- Integration pattern: callers hold ContractId ComplianceProof explicitly
+-- and pass it to Transfer / Mint choices as a parameter. fetch() on an
+-- archived contract fails — this preserves atomicity without fetchByKey.
+--
+-- Multi-node deployments: Canton's privacy model means the token owner's
+-- participant node may not hold this contract (owner is not a stakeholder).
+-- Before submitting a Transfer choice, the owner MUST obtain the
+-- disclosedContracts bundle from the TokenProof backend:
+--
+--   GET /proof/{assetId}/disclosure?issuer_party=<issuer>
+--
+-- and include the result under 'disclosedContracts' in the Canton
+-- POST /v2/commands/submit-and-wait call. This is standard Canton
+-- practice for cross-node contract visibility (see Token Standard CIP-0056
+-- factory pattern and the disclosedContracts field in the JSON Ledger API).
 template ComplianceProof
   with
     assetId        : Text           -- CIP-0056 token identifier
